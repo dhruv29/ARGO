@@ -1,20 +1,10 @@
+# Tasks Index — Phase 1 (Orpheus)
 
-Tasks Index — Phase 1 (Orpheus)
-
-01_scaffolding
-
-02_ingestion
-
-03_retrieval
-
-04_orpheus_flow
-
-05_outputs
-
-06_cli
-
-07_watch_folder
- (optional)
-
-08_exposure
-
+- [01_scaffolding](01_scaffolding.md)
+- [02_ingestion](02_ingestion.md)
+- [03_retrieval](03_retrieval.md)
+- [04_orpheus_flow](04_orpheus_flow.md)
+- [05_outputs](05_outputs.md)
+- [06_cli](06_cli.md)
+- [07_watch_folder](07_watch_folder.md) (optional)
+- [08_exposure](08_exposure.md)

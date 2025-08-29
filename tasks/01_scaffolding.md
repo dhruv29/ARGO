@@ -1,21 +1,13 @@
+# Task 01 — Scaffolding
 
-Task 01 — Scaffolding
-Scope
-
+## Scope
 Repo structure, env, deps, infra (Postgres), schema apply.
 
-Steps
+## Steps
+- Ensure dirs exist (cli/core/stores/agents/mcp/docs/tasks/phases/samples/object_store/reports/flows).
+- `uv venv && source .venv/bin/activate && uv pip install -e .`
+- `docker compose up -d`
+- `psql "$PG_DSN" -f stores/pg_schema.sql`
 
-Ensure dirs exist (cli/core/stores/agents/mcp/docs/tasks/phases/samples/object_store/reports/flows).
-
-Fill repo with README, docs, phases, tasks.
-
-uv venv && uv pip install -e .
-
-docker compose up -d
-
-psql "$PG_DSN" -f stores/pg_schema.sql
-
-Acceptance
-
-psql shows tables created; repo has all docs; uv pip installed.
+## Acceptance
+- Tables created; env + deps installed; Postgres healthy.

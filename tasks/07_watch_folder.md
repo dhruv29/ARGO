@@ -1,11 +1,8 @@
+# Task 07 — Watch Folder (Optional)
 
-Task 07 — Watch Folder (Optional)
-Scope
+## Scope
+- `argo watch ./intel_reports` to auto-ingest new PDFs.
+- Debounce + SHA256 idempotency.
 
-argo watch ./intel_reports to auto-ingest new PDFs.
-
-Debounce + SHA256 idempotency.
-
-Acceptance
-
-Dropping a PDF ingests it exactly once and shows stats.
+## Acceptance
+- Dropping a PDF ingests it exactly once and prints stats.

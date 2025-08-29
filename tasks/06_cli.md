@@ -1,15 +1,9 @@
+# Task 06 — CLI
 
-Task 06 — CLI
-Commands
+## Commands
+- `argo ingest <path|dir>`
+- `argo run orpheus --actor <name> [--exposure]`
+- `argo status`
 
-argo ingest <path|dir>
-
-argo run orpheus --actor <name> [--exposure]
-
-argo status
-
-Acceptance
-
-argo --help lists commands.
-
-Commands run end-to-end for sample PDFs.
+## Acceptance
+- `argo --help` lists commands; commands run end-to-end for samples.

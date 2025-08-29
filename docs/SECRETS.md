@@ -1,14 +1,15 @@
+# Secrets & Keys
 
-Secrets & Keys
+Copy `.env.example` → `.env` and set:
 
-Copy .env.example → .env, set OPENAI_API_KEY.
+## Required
+- `OPENAI_API_KEY` — embeddings (and limited vision later if enabled).
 
-Optional ServiceNow VR (read-only): SNOW_BASE_URL, SNOW_USER, SNOW_PASSWORD.
+## Optional
+- **ServiceNow VR (read-only):**
+  - `SNOW_BASE_URL`, `SNOW_USER`, `SNOW_PASSWORD`
 
-Rules
-
-No secrets in git.
-
-CI runs with mocks only.
-
-Local-first: must run with only OPENAI_API_KEY.
+## Rules
+- No secrets in git.
+- Local-first: app must run with only `OPENAI_API_KEY`.
+- Use mocks in CI; never use live keys in tests.

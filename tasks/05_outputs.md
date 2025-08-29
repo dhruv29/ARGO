@@ -1,15 +1,10 @@
+# Task 05 — Outputs
 
-Task 05 — Outputs
-Scope
+## Scope
+- Markdown report sections: Overview, Aliases, TTPs, CVEs (KEV/EPSS), Evidence.
+- JSONL evidence pack (tool calls, hits, plan).
+- Filenames include agent + subject.
 
-Markdown report: Overview, Aliases, TTPs, CVEs (KEV/EPSS), Evidence.
-
-JSONL evidence pack.
-
-Filenames include agent + subject.
-
-Acceptance
-
-After approval: reports/report_orpheus_<actor>.md
-
-And reports/evidence_orpheus_<actor>.jsonl
+## Acceptance
+- After approval: `reports/report_orpheus_<actor>.md`
+- And `reports/evidence_orpheus_<actor>.jsonl`
