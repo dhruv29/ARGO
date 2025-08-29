@@ -25,30 +25,52 @@ class OrpheusState(TypedDict, total=False):
 
 # ---- Step functions (call into your core modules; stubbed now)
 def step_resolve(state: OrpheusState) -> OrpheusState:
-    """Resolve actor -> canonical id, aliases (via PG)."""
-    from ..core.expand import get_actor_aliases, seed_test_actor_data
+    """Deterministic-first actor resolution with guarded LLM fallback."""
+    from ..core.expand import resolve_actor_aliases, fallback_aliases
+    from ..core.retrieve import retrieve
     
-    actor = state.get("actor", "")
+    actor = state.get("actor", "").strip()
     logger.info(f"Resolving actor: {actor}")
     
-    # Ensure test data exists (in production, this would be seeded separately)
-    try:
-        seed_test_actor_data()
-    except Exception as e:
-        logger.warning(f"Failed to seed test data: {e}")
-    
-    # Get actor aliases
-    aliases = get_actor_aliases(actor)
-    state["aliases"] = aliases
-    
-    # Set up search plan
+    # Initialize plan
     state["plan"] = {
         "router": "hybrid",
-        "namespaces": ["personal"],  # Start with personal namespace
-        "search_terms": [actor] + aliases[:3]  # Limit aliases to avoid over-expansion
+        "namespaces": ["personal"],
+        "search_terms": [actor]
     }
     
-    logger.info(f"Resolved actor {actor} -> {len(aliases)} aliases")
+    # 1) Deterministic PG lookup first
+    aliases = resolve_actor_aliases(actor)
+    
+    if len(aliases) > 1:  # Found deterministic aliases
+        state["aliases"] = aliases
+        state["plan"]["search_terms"] = [actor] + aliases[:3]  # Limit expansion
+        logger.info(f"Deterministic resolve: {actor} -> {len(aliases)} aliases")
+        return state
+    
+    # 2) Fallback path - RAG-LLM extraction
+    logger.info(f"No deterministic aliases for {actor}, trying RAG-LLM fallback")
+    
+    def retrieve_fn(query, topk=15):
+        """Wrapper for retrieve function."""
+        try:
+            return retrieve(query, namespaces=("personal",), topk=topk)
+        except Exception as e:
+            logger.warning(f"Retrieve failed in fallback: {e}")
+            return []
+    
+    fallback_aliases_list, alias_candidates = fallback_aliases(actor, retrieve_fn)
+    
+    if fallback_aliases_list:
+        state["aliases"] = [actor] + fallback_aliases_list
+        state["alias_candidates"] = alias_candidates
+        state["needs_alias_write_approval"] = True
+        state["plan"]["search_terms"] = [actor] + fallback_aliases_list[:3]
+        logger.info(f"RAG-LLM fallback: {actor} -> {len(fallback_aliases_list)} candidate aliases")
+    else:
+        state["aliases"] = [actor]  # Just the original actor name
+        logger.info(f"No aliases found for {actor} (deterministic or fallback)")
+    
     return state
 
 def step_expand(state: OrpheusState) -> OrpheusState:

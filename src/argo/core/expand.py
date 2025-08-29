@@ -2,6 +2,7 @@
 
 import os
 import logging
+import json
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 import psycopg
@@ -12,9 +13,12 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def get_actor_aliases(actor_name: str, db_url: str = None) -> List[str]:
+def resolve_actor_aliases(actor_name: str, db_url: str = None) -> List[str]:
     """
-    Get all aliases for an actor from the database.
+    Deterministic-first alias resolution.
+    
+    1) Query alias table and actor.names
+    2) Return unique list
     
     Args:
         actor_name: Actor name to look up
@@ -26,39 +30,78 @@ def get_actor_aliases(actor_name: str, db_url: str = None) -> List[str]:
     if not db_url:
         db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
     
-    aliases = [actor_name]  # Include the original name
+    aliases = [actor_name]  # Always include the query term
     
     try:
         with psycopg.connect(db_url) as conn:
             with conn.cursor() as cur:
-                # Look for exact match or partial match in names array
+                # 1) Query alias table first (new provenance-tracked table)
                 cur.execute("""
-                    SELECT DISTINCT names 
-                    FROM actor 
-                    WHERE %s = ANY(names) 
-                    OR id ILIKE %s 
-                    OR %s ILIKE ANY(names)
-                    OR EXISTS (
-                        SELECT 1 FROM unnest(names) as name 
-                        WHERE name ILIKE %s
-                    )
-                """, (actor_name, f"%{actor_name}%", actor_name, f"%{actor_name}%"))
+                    SELECT DISTINCT a.name, a.source, a.confidence
+                    FROM alias a
+                    JOIN actor act ON a.actor_id = act.id
+                    WHERE a.name ILIKE %s 
+                    OR act.id ILIKE %s
+                    OR %s = ANY(act.names)
+                    ORDER BY a.confidence DESC
+                """, (f"%{actor_name}%", f"%{actor_name}%", actor_name))
                 
-                rows = cur.fetchall()
+                alias_rows = cur.fetchall()
                 
-                for row in rows:
-                    if row[0]:  # names array
-                        aliases.extend(row[0])
+                if alias_rows:
+                    # Found in alias table - use these (higher fidelity)
+                    for row in alias_rows:
+                        if row[0] and row[0].strip():
+                            aliases.append(row[0].strip())
+                    
+                    # Also get all aliases for the same actor_id for completeness
+                    cur.execute("""
+                        SELECT DISTINCT a.name
+                        FROM alias a
+                        WHERE a.actor_id IN (
+                            SELECT DISTINCT a2.actor_id
+                            FROM alias a2
+                            JOIN actor act ON a2.actor_id = act.id
+                            WHERE a2.name ILIKE %s OR act.id ILIKE %s OR %s = ANY(act.names)
+                        )
+                        AND a.confidence >= 0.7
+                        ORDER BY a.name
+                    """, (f"%{actor_name}%", f"%{actor_name}%", actor_name))
+                    
+                    complete_aliases = cur.fetchall()
+                    for row in complete_aliases:
+                        if row[0] and row[0].strip():
+                            aliases.append(row[0].strip())
+                
+                else:
+                    # Fallback to legacy actor.names array
+                    cur.execute("""
+                        SELECT DISTINCT names 
+                        FROM actor 
+                        WHERE %s = ANY(names) 
+                        OR id ILIKE %s 
+                        OR %s ILIKE ANY(names)
+                    """, (actor_name, f"%{actor_name}%", actor_name))
+                    
+                    rows = cur.fetchall()
+                    for row in rows:
+                        if row[0]:  # names array
+                            aliases.extend(row[0])
                 
                 # Remove duplicates and empty strings
                 aliases = list(set(name.strip() for name in aliases if name and name.strip()))
                 
-                logger.info(f"Found {len(aliases)} aliases for actor '{actor_name}': {aliases}")
+                logger.info(f"Deterministic resolve: Found {len(aliases)} aliases for '{actor_name}': {aliases}")
                 
     except Exception as e:
-        logger.warning(f"Failed to lookup actor aliases for '{actor_name}': {e}")
+        logger.warning(f"Failed to resolve actor aliases for '{actor_name}': {e}")
     
     return aliases
+
+
+def get_actor_aliases(actor_name: str, db_url: str = None) -> List[str]:
+    """Legacy function - redirects to resolve_actor_aliases for backward compatibility."""
+    return resolve_actor_aliases(actor_name, db_url)
 
 
 def get_actor_techniques(actor_name: str, db_url: str = None) -> List[str]:
@@ -243,6 +286,269 @@ def expand_actor(actor_name: str, db_url: str = None) -> Dict[str, List[str]]:
     logger.info(f"Actor expansion complete: {total_items} total items")
     
     return expansion
+
+
+def _extract_aliases_with_rag_llm(
+    actor: str, 
+    evidence: List[Dict[str, Any]], 
+    db_url: str = None
+) -> List[Dict[str, Any]]:
+    """
+    Use only provided evidence chunks (RAG) to run an extract-only LLM prompt.
+    
+    Args:
+        actor: Actor name to find aliases for
+        evidence: List of evidence items from retrieval
+        db_url: Database connection URL
+    
+    Returns:
+        List of dicts: {alias, doc_id, page, snippet, confidence, model}
+    """
+    import openai
+    import json
+    import hashlib
+    from tenacity import retry, stop_after_attempt, wait_exponential
+    
+    if not evidence:
+        return []
+    
+    # Build evidence context
+    evidence_text = ""
+    for i, item in enumerate(evidence[:10]):  # Limit to top 10 chunks
+        snippet = item.get('snippet', item.get('text', ''))
+        doc_id = item.get('document_id', 'unknown')
+        page = item.get('page', 'unknown')
+        evidence_text += f"[Doc {doc_id}, Page {page}]: {snippet}\n\n"
+    
+    # Extract-only prompt with JSON schema
+    system_prompt = """
+You are a cyberthreat intelligence analyst. Extract ONLY actor aliases/names from the provided evidence.
+
+Rules:
+1. ONLY extract names that clearly refer to the same threat actor
+2. Include confidence score 0.0-1.0 based on evidence strength
+3. Return valid JSON only, no other text
+4. If no aliases found, return empty array
+
+JSON Schema:
+[
+  {
+    "alias": "string (the alias/name found)",
+    "confidence": float (0.0-1.0),
+    "evidence_snippet": "string (the specific text that mentions this alias)"
+  }
+]"""
+    
+    user_prompt = f"""Extract aliases for threat actor: {actor}
+
+Evidence:
+{evidence_text}
+
+Return JSON array of aliases found:"""
+    
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logger.warning("No OpenAI API key for LLM fallback")
+            return []
+        
+        model = os.getenv("FALLBACK_RAG_LLM_MODEL", "gpt-4o-mini")
+        max_tokens = int(os.getenv("FALLBACK_RAG_LLM_MAX_TOKENS", "800"))
+        
+        client = openai.OpenAI(api_key=api_key)
+        
+        @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=4))
+        def _call_llm():
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=max_tokens
+            )
+            return response.choices[0].message.content
+        
+        response_text = _call_llm()
+        
+        # Parse JSON response
+        try:
+            aliases_data = json.loads(response_text)
+            if not isinstance(aliases_data, list):
+                logger.warning(f"LLM returned non-list: {type(aliases_data)}")
+                return []
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse LLM JSON response: {e}")
+            return []
+        
+        # Convert to our format and add metadata
+        candidates = []
+        for item in aliases_data:
+            if not isinstance(item, dict) or 'alias' not in item:
+                continue
+            
+            alias = item.get('alias', '').strip()
+            confidence = float(item.get('confidence', 0.0))
+            snippet = item.get('evidence_snippet', '')[:200]
+            
+            if not alias or confidence < 0.1:
+                continue
+            
+            # Find best matching evidence item for metadata
+            best_evidence = evidence[0]  # Default to first
+            for ev in evidence:
+                if snippet.lower() in ev.get('snippet', '').lower():
+                    best_evidence = ev
+                    break
+            
+            candidate = {
+                'alias': alias,
+                'doc_id': best_evidence.get('document_id', 'unknown'),
+                'page': best_evidence.get('page', 0),
+                'snippet': snippet,
+                'confidence': min(confidence, 1.0),  # Clamp to 1.0
+                'model': model,
+                'snippet_hash': hashlib.md5(snippet.encode()).hexdigest()[:8]
+            }
+            
+            candidates.append(candidate)
+        
+        logger.info(f"LLM extracted {len(candidates)} alias candidates for {actor}")
+        return candidates
+        
+    except Exception as e:
+        logger.error(f"LLM alias extraction failed: {e}")
+        return []
+
+
+def fallback_aliases(
+    actor: str, 
+    retrieve_fn, 
+    db_url: str = None
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """
+    If no aliases in PG, use retrieval over local corpus + LLM extraction.
+    
+    Args:
+        actor: Actor name to find aliases for
+        retrieve_fn: Function to retrieve evidence chunks
+        db_url: Database connection URL
+    
+    Returns:
+        Tuple of (aliases, raw_candidates)
+    """
+    if os.getenv("FALLBACK_RAG_LLM_ENABLED", "false").lower() != "true":
+        logger.info("RAG-LLM fallback disabled")
+        return [], []
+    
+    logger.info(f"Running RAG-LLM fallback for actor: {actor}")
+    
+    try:
+        # 1) Get chunks mentioning the actor name
+        evidence = retrieve_fn(query=actor, topk=15)
+        
+        # Convert Evidence objects to dicts if needed
+        evidence_dicts = []
+        for ev in evidence:
+            if hasattr(ev, '__dict__'):
+                # Evidence object
+                evidence_dicts.append({
+                    'document_id': ev.document_id,
+                    'page': ev.page,
+                    'snippet': ev.snippet,
+                    'score': ev.score
+                })
+            else:
+                # Already a dict
+                evidence_dicts.append(ev)
+        
+        if not evidence_dicts:
+            logger.info(f"No evidence found for {actor} in local corpus")
+            return [], []
+        
+        # 2) LLM extract-only
+        candidates = _extract_aliases_with_rag_llm(actor, evidence_dicts, db_url)
+        
+        # 3) Apply confidence threshold
+        min_conf = float(os.getenv("FALLBACK_ALIAS_CONF_MIN", "0.65"))
+        filtered_candidates = [c for c in candidates if c.get('confidence', 0) >= min_conf]
+        
+        # 4) Extract just the alias names
+        aliases = sorted({c['alias'] for c in filtered_candidates})
+        
+        logger.info(f"RAG-LLM fallback found {len(aliases)} aliases above {min_conf} confidence")
+        return list(aliases), candidates
+        
+    except Exception as e:
+        logger.error(f"Fallback alias extraction failed: {e}")
+        return [], []
+
+
+def upsert_aliases(
+    actor_id: str, 
+    aliases: List[Dict[str, Any]], 
+    approved: bool,
+    db_url: str = None
+) -> None:
+    """
+    Write to alias table only if approved.
+    
+    Args:
+        actor_id: Actor ID to associate aliases with
+        aliases: List of alias candidate dicts
+        approved: Whether the write was approved
+        db_url: Database connection URL
+    """
+    if not approved or not aliases:
+        logger.info("Alias upsert skipped (not approved or no aliases)")
+        return
+    
+    if not db_url:
+        db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+    
+    try:
+        import uuid
+        run_id = str(uuid.uuid4())[:8]
+        
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                for alias_data in aliases:
+                    alias_name = alias_data.get('alias', '').strip()
+                    confidence = alias_data.get('confidence', 0.0)
+                    
+                    if not alias_name:
+                        continue
+                    
+                    # Build provenance JSON
+                    provenance = {
+                        'doc_id': alias_data.get('doc_id'),
+                        'page': alias_data.get('page'),
+                        'snippet_hash': alias_data.get('snippet_hash'),
+                        'model': alias_data.get('model'),
+                        'run_id': run_id,
+                        'original_snippet': alias_data.get('snippet', '')[:100]
+                    }
+                    
+                    cur.execute("""
+                        INSERT INTO alias (actor_id, name, source, provenance, confidence)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (actor_id, name) DO UPDATE SET
+                            confidence = GREATEST(EXCLUDED.confidence, alias.confidence),
+                            provenance = EXCLUDED.provenance
+                    """, (
+                        actor_id,
+                        alias_name,
+                        'rag_llm',
+                        json.dumps(provenance),
+                        confidence
+                    ))
+                
+                conn.commit()
+                logger.info(f"Upserted {len(aliases)} aliases for actor {actor_id}")
+                
+    except Exception as e:
+        logger.error(f"Failed to upsert aliases: {e}")
 
 
 def expand_search_terms(terms: List[str], db_url: str = None) -> List[str]:

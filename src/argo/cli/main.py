@@ -148,7 +148,32 @@ def _approver(state: OrpheusState) -> bool:
                 console.print(f"   {line[:80]}...")
                 break
     
-    # Vision Usage (placeholder for future implementation)
+    # Alias candidates from RAG-LLM fallback
+    if state.get("needs_alias_write_approval"):
+        console.print()
+        console.rule("[bold cyan]🔍 New Aliases Discovered via RAG-LLM")
+        alias_candidates = state.get("alias_candidates", [])
+        for candidate in alias_candidates:
+            alias_name = candidate.get('alias', 'unknown')
+            confidence = candidate.get('confidence', 0.0)
+            doc_id = candidate.get('doc_id', 'unknown')
+            page = candidate.get('page', 'unknown')
+            snippet = candidate.get('snippet', '')[:80]
+            
+            console.print(f"[bold yellow]• {alias_name}[/] [dim](conf={confidence:.2f})[/]")
+            console.print(f"   Source: {doc_id} page {page}")
+            console.print(f"   Evidence: \"{snippet}...\"")
+        
+        console.print()
+        write_approved = Confirm.ask("💾 Approve writing these aliases to the knowledge graph?", default=False)
+        state["approved_alias_write"] = write_approved
+        
+        if write_approved:
+            console.print("[green]✅ Alias write approved[/]")
+        else:
+            console.print("[yellow]⚠️  Alias write declined - aliases will not be saved[/]")
+    
+    # Vision Usage (placeholder for future implementation)  
     console.print()
     console.print(f"[bold red]👁️  Vision Usage:[/] Not implemented yet")
     

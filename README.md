@@ -1,11 +1,17 @@
 # Argo — The Argonauts SOC Platform
 
-**Argo** is a CLI-first SOC sidecar. We start with **Orpheus (CTI agent)**:
+**Argo** is a CLI-first SOC sidecar. Phase-1 ships **Orpheus (CTI agent)**:
 - Ingest threat PDFs → chunk + embed (OpenAI).
-- Build actor profiles (aliases, TTPs, CVEs) with **doc/page/bbox citations**.
-- Optional exposure (KEV/EPSS; ServiceNow VR if configured).
-- **Human-in-loop** approval gate before publish.
+- Retrieve evidence with **doc/page/bbox** citations.
+- Build actor profiles (aliases, TTPs, CVEs) with a **human approval gate**.
+- Optional exposure view (KEV/EPSS; ServiceNow VR if configured).
 - Outputs: **Markdown** report + **JSONL** evidence pack.
+
+### Deterministic-first, with guarded LLM fallback
+Orpheus always prefers **deterministic sources** (seeded Postgres → ATT&CK/MISP sync).  
+If an actor is unknown, Orpheus can run a **RAG-extraction fallback** over your **local ingested PDFs** to propose aliases.  
+New aliases are **shown with citations** and only **written to the graph on analyst approval**.  
+This keeps the sidecar **fast, auditable, and low-risk** while avoiding dead ends.
 
 ## Agents (Crew Status)
 - 🪕 **Orpheus** — CTI Agent (**Phase 1 target — ship as finished product**)
@@ -33,19 +39,7 @@ psql "${PG_DSN:-postgresql://hunter:hunter@localhost:5432/hunter}" -f stores/pg_
 
 # 4) See plan & tasks
 cat phases/PHASE1_ORPHEUS.md
-Tech Stack
-Python 3.11+, uv pkg manager
-
-CLI: Typer + Rich
-
-Stores: Postgres (graph/metadata), FAISS-CPU (vectors), filesystem object store
-
-LLM: OpenAI embeddings (text-embedding-3-small default); selective vision (auto, capped)
-
-Retrieval: Hybrid FAISS + BM25 (rank-bm25), citations only
-
-Runbooks: Deterministic flows + approval gate
-
-Security: Local-first, read-only integrations, no secrets in repo
+### Tech Stack
+Python 3.11 • Typer • LangGraph • Postgres • FAISS-CPU • PyMuPDF • rank-BM25 • OpenAI embeddings
 
 See docs/ARCHITECTURE.md, docs/CONFIG.md, docs/SECRETS.md.
