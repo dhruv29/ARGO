@@ -1,16 +1,28 @@
+
 import os
+import time
 from pathlib import Path
 import typer
 from rich.console import Console
 from rich.prompt import Confirm
+import psycopg
 from argo.runbooks.orpheus_graph import build_orpheus_graph, OrpheusState
 from argo.core.ingest import ingest_directory
 from argo.core.embed import embed_all_chunks, get_embedding_stats
 from argo.core.faiss_index import build_faiss_index
 from argo.core.retrieve import retrieve
+from argo.core.logging_config import configure_logging, get_audit_logger, log_approval_gate
+from argo.core.approval_policy import load_policy_from_env
+from argo.core.stix_export import export_orpheus_results_to_stix
 
 app = typer.Typer(help="Argo CLI — The Argonauts SOC Platform")
 console = Console()
+
+# Initialize structured logging
+configure_logging(
+    log_level=os.getenv("LOG_LEVEL", "INFO"),
+    json_logs=os.getenv("JSON_LOGS", "false").lower() == "true"
+)
 
 @app.command()
 def ingest(
@@ -67,7 +79,12 @@ def ingest(
         raise typer.Exit(1)
 
 def _approver(state: OrpheusState) -> bool:
-    console.rule("[bold yellow]🔍 Orpheus: Approval Gate")
+    console.rule("[bold yellow]🔍 Orpheus: Policy-Driven Approval Gate")
+    
+    # Initialize policy engine and audit logging
+    policy_engine = load_policy_from_env()
+    audit_logger = state.get("audit_logger") or get_audit_logger("approval_gate")
+    start_time = time.time()
     
     actor = state.get("actor", "(unknown)")
     aliases = state.get("aliases", [])
@@ -77,78 +94,106 @@ def _approver(state: OrpheusState) -> bool:
     draft_report = state.get("draft_report", "")
     plan = state.get("plan", {})
     
-    # Actor Information
+    # Display actor information
     console.print(f"[bold blue]🎯 Target Actor:[/] {actor}")
     if aliases:
         console.print(f"[bold blue]📋 Aliases:[/] {', '.join(aliases[:5])}")
         if len(aliases) > 5:
             console.print(f"   ... and {len(aliases) - 5} more")
     
-    # Expansion Results
+    # Display expansion results
     console.print()
     console.print(f"[bold green]🔧 TTPs Found:[/] {len(ttps)}")
-    if ttps:
-        console.print(f"   {', '.join(ttps[:5])}")
-        if len(ttps) > 5:
-            console.print(f"   ... and {len(ttps) - 5} more")
+    if ttps and len(ttps) <= 5:
+        console.print(f"   {', '.join(ttps)}")
+    elif ttps:
+        console.print(f"   {', '.join(ttps[:5])} ... and {len(ttps) - 5} more")
     
     console.print(f"[bold green]🚨 CVEs Found:[/] {len(cves)}")
-    if cves:
-        console.print(f"   {', '.join(cves[:5])}")
-        if len(cves) > 5:
-            console.print(f"   ... and {len(cves) - 5} more")
+    if cves and len(cves) <= 5:
+        console.print(f"   {', '.join(cves)}")
+    elif cves:
+        console.print(f"   {', '.join(cves[:5])} ... and {len(cves) - 5} more")
     
-    # Evidence Statistics
+    # Display evidence statistics
     console.print()
     console.print(f"[bold cyan]📊 Evidence Statistics:[/]")
     console.print(f"   Total Chunks: {len(evidence)}")
     
+    evidence_stats = {}
     if evidence:
-        # Evidence by source
         sources = {}
         docs = set()
+        confidences = []
         high_conf = 0
         
         for ev in evidence:
-            source = ev.get('source', 'unknown')
+            source = getattr(ev, 'source', 'unknown') if hasattr(ev, 'source') else ev.get('source', 'unknown')
             sources[source] = sources.get(source, 0) + 1
-            docs.add(ev.get('document_id', 'unknown'))
-            if ev.get('score', 0) > 0.8:
+            
+            doc_id = getattr(ev, 'document_id', 'unknown') if hasattr(ev, 'document_id') else ev.get('document_id', 'unknown')
+            docs.add(doc_id)
+            
+            confidence = getattr(ev, 'confidence', 0.5) if hasattr(ev, 'confidence') else ev.get('confidence', 0.5)
+            confidences.append(confidence)
+            if confidence > 0.8:
                 high_conf += 1
+        
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+        evidence_stats = {
+            "total_evidence": len(evidence),
+            "unique_documents": len(docs),
+            "unique_sources": len(sources),
+            "high_confidence_count": high_conf,
+            "avg_confidence": avg_confidence,
+            "sources_breakdown": sources
+        }
         
         console.print(f"   Documents: {len(docs)}")
         console.print(f"   High Confidence (>0.8): {high_conf}")
+        console.print(f"   Average Confidence: {avg_confidence:.3f}")
         console.print(f"   Sources: {dict(sources)}")
+    
+    # Policy evaluation
+    console.print()
+    console.rule("[bold magenta]📋 Policy Evaluation")
+    
+    policy_eval = policy_engine.evaluate_state(state)
+    
+    # Display policy results
+    console.print(f"[bold]Policy:[/] {policy_engine.policy.name}")
+    console.print(f"[bold]Overall Score:[/] {policy_eval.total_score:.2f} / 1.00")
+    
+    if policy_eval.approved:
+        console.print(f"[bold green]Status:[/] ✅ APPROVED")
+    else:
+        console.print(f"[bold red]Status:[/] ❌ NOT APPROVED")
+    
+    console.print()
+    console.print("[bold]Rule Evaluation:[/]")
+    for rule_name, result in policy_eval.rule_results.items():
+        status_icon = "✅" if result["passed"] else "❌"
+        required_label = " [red](REQUIRED)[/]" if result["required"] else ""
         
-        # Evidence quality distribution
-        scores = [ev.get('score', 0) for ev in evidence]
-        avg_score = sum(scores) / len(scores) if scores else 0
-        console.print(f"   Average Score: {avg_score:.3f}")
+        actual = result.get("actual_value")
+        threshold = result.get("threshold")
+        
+        if actual is not None and threshold is not None:
+            console.print(f"   {status_icon} {rule_name}: {actual:.2f} / {threshold:.2f}{required_label}")
+        else:
+            console.print(f"   {status_icon} {rule_name}{required_label}")
+        
+        console.print(f"      {result['description']}")
     
-    # Search Plan
+    # Display recommendation
     console.print()
-    console.print(f"[bold magenta]🔍 Search Plan:[/]")
-    search_terms = plan.get('search_terms', [])
-    namespaces = plan.get('namespaces', [])
-    console.print(f"   Terms: {', '.join(search_terms[:5])}")
-    if len(search_terms) > 5:
-        console.print(f"   ... and {len(search_terms) - 5} more")
-    console.print(f"   Namespaces: {', '.join(namespaces)}")
+    console.print(f"[bold yellow]📝 Recommendation:[/]")
+    recommendation_lines = policy_eval.recommendation.split('\n')
+    for line in recommendation_lines:
+        console.print(f"   {line}")
     
-    # Draft Report Preview
-    console.print()
-    console.print(f"[bold yellow]📄 Draft Report:[/]")
-    console.print(f"   Length: {len(draft_report)} characters")
-    
-    if draft_report:
-        # Show first few lines of the report
-        lines = draft_report.split('\\n')[:5]
-        for line in lines:
-            if line.strip():
-                console.print(f"   {line[:80]}...")
-                break
-    
-    # Alias candidates from RAG-LLM fallback
+    # Handle alias candidates if any
+    alias_write_approved = False
     if state.get("needs_alias_write_approval"):
         console.print()
         console.rule("[bold cyan]🔍 New Aliases Discovered via RAG-LLM")
@@ -165,26 +210,59 @@ def _approver(state: OrpheusState) -> bool:
             console.print(f"   Evidence: \"{snippet}...\"")
         
         console.print()
-        write_approved = Confirm.ask("💾 Approve writing these aliases to the knowledge graph?", default=False)
-        state["approved_alias_write"] = write_approved
+        alias_write_approved = Confirm.ask("💾 Approve writing these aliases to the knowledge graph?", default=False)
+        state["approved_alias_write"] = alias_write_approved
         
-        if write_approved:
+        if alias_write_approved:
             console.print("[green]✅ Alias write approved[/]")
         else:
             console.print("[yellow]⚠️  Alias write declined - aliases will not be saved[/]")
     
-    # Vision Usage (placeholder for future implementation)  
+    # Show draft report preview
     console.print()
-    console.print(f"[bold red]👁️  Vision Usage:[/] Not implemented yet")
+    console.print(f"[bold yellow]📄 Draft Report Preview:[/]")
+    console.print(f"   Length: {len(draft_report)} characters")
     
-    # Draft Paths
+    if draft_report:
+        lines = draft_report.split('\n')[:3]
+        for line in lines:
+            if line.strip():
+                preview = line[:100] + "..." if len(line) > 100 else line
+                console.print(f"   {preview}")
+    
+    # Final approval decision
     console.print()
     console.print(f"[bold white]📁 Output Paths:[/]")
     console.print(f"   Report: reports/report_orpheus_{actor}_[timestamp].md")
     console.print(f"   Evidence: reports/evidence_orpheus_{actor}_[timestamp].jsonl")
     
     console.print()
-    return Confirm.ask("🚀 Publish report & evidence now?", default=False)
+    
+    # Make final decision - policy can override but human has final say
+    if policy_eval.approved:
+        final_decision = Confirm.ask("🚀 Policy recommends approval. Publish report & evidence?", default=True)
+    else:
+        console.print("[yellow]⚠️  Policy recommends against publication[/]")
+        final_decision = Confirm.ask("🚀 Override policy and publish anyway?", default=False)
+    
+    # Log approval gate decision
+    decision_time_ms = (time.time() - start_time) * 1000
+    log_approval_gate(
+        audit_logger,
+        state=state,
+        decision=final_decision,
+        decision_time_ms=decision_time_ms,
+        evidence_stats=evidence_stats,
+        approver_context={
+            "policy_approved": policy_eval.approved,
+            "policy_score": policy_eval.total_score,
+            "policy_name": policy_engine.policy.name,
+            "failed_rules": policy_eval.failed_required_rules,
+            "alias_write_approved": alias_write_approved
+        }
+    )
+    
+    return final_decision
 
 @app.command()
 def run(
@@ -196,16 +274,52 @@ def run(
         console.print(f"[red]Unsupported agent:[/] {agent} (only 'orpheus' for now)")
         raise typer.Exit(2)
 
+    # Initialize audit logger
+    audit_logger = get_audit_logger("orpheus_execution")
+    start_time = time.time()
+    
+    audit_logger.info(
+        "orpheus_execution_started",
+        actor=actor or "",
+        agent=agent,
+        exposure_enabled=exposure,
+        event_type="execution_start"
+    )
+
     graph = build_orpheus_graph(approver=_approver)
-    initial: OrpheusState = {"run_id": "local-run", "actor": actor or ""}
+    initial: OrpheusState = {"run_id": "local-run", "actor": actor or "", "audit_logger": audit_logger}
 
     # LangGraph runnable interface
     final_state: OrpheusState = graph.invoke(initial)
+    
+    execution_time_ms = (time.time() - start_time) * 1000
+    
     if final_state.get("approved"):
         out = final_state.get("outputs", {})
         console.print(f"[green]Published[/] -> {out}")
+        
+        audit_logger.info(
+            "orpheus_execution_completed",
+            actor=actor or "",
+            execution_time_ms=execution_time_ms,
+            approved=True,
+            outputs=out,
+            evidence_count=len(final_state.get("evidence", [])),
+            aliases_discovered=len(final_state.get("aliases", [])),
+            event_type="execution_completion"
+        )
     else:
         console.print("[yellow]Draft not approved; nothing published.[/]")
+        
+        audit_logger.info(
+            "orpheus_execution_completed",
+            actor=actor or "",
+            execution_time_ms=execution_time_ms,
+            approved=False,
+            evidence_count=len(final_state.get("evidence", [])),
+            aliases_discovered=len(final_state.get("aliases", [])),
+            event_type="execution_completion"
+        )
     return
 
 @app.command()
@@ -322,12 +436,102 @@ def index(
 
 
 @app.command()
+def export_stix(
+    actor: str,
+    output_dir: str = typer.Option("./reports", help="Output directory for STIX files")
+):
+    """Export CTI data to STIX 2.1 bundle for interoperability."""
+    console.print(f"[bold]Exporting STIX bundle for actor:[/] {actor}")
+    
+    # Validate output directory
+    output_path = Path(output_dir)
+    if not output_path.exists():
+        output_path.mkdir(parents=True, exist_ok=True)
+        console.print(f"[green]Created output directory:[/] {output_path}")
+    
+    try:
+        # Get actor data from database
+        db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+        
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                # Get actor aliases
+                cur.execute("""
+                    SELECT DISTINCT a.name FROM alias a
+                    JOIN actor act ON a.actor_id = act.id
+                    WHERE act.id = %s OR %s = ANY(act.names)
+                """, (actor, actor))
+                
+                aliases = [row[0] for row in cur.fetchall() if row[0]]
+                if not aliases:
+                    aliases = [actor]  # Fallback to original name
+                
+                # Get techniques
+                cur.execute("""
+                    SELECT DISTINCT t.t_id FROM technique t
+                    JOIN cve_technique ct ON ct.t_id = t.t_id
+                    JOIN cve c ON ct.cve_id = c.id
+                    JOIN actor_cve ac ON ac.cve_id = c.id
+                    JOIN actor a ON ac.actor_id = a.id
+                    WHERE a.id = %s OR %s = ANY(a.names)
+                """, (actor, actor))
+                
+                techniques = [row[0] for row in cur.fetchall() if row[0]]
+                
+                # Get CVEs
+                cur.execute("""
+                    SELECT DISTINCT c.id FROM cve c
+                    JOIN actor_cve ac ON ac.cve_id = c.id
+                    JOIN actor a ON ac.actor_id = a.id
+                    WHERE a.id = %s OR %s = ANY(a.names)
+                """, (actor, actor))
+                
+                cves = [row[0] for row in cur.fetchall() if row[0]]
+        
+        # Get evidence from recent search
+        console.print(f"[bold]Retrieving evidence for export...[/]")
+        evidence = retrieve(actor, namespaces=("personal",), topk=20)
+        
+        if not evidence:
+            console.print("[yellow]No evidence found for export[/]")
+            return
+        
+        # Export to STIX
+        with console.status("[bold green]Generating STIX bundle..."):
+            export_result = export_orpheus_results_to_stix(
+                actor=actor,
+                aliases=aliases,
+                techniques=techniques,
+                cves=cves,
+                evidence=evidence,
+                output_dir=output_path
+            )
+        
+        console.print(f"[green]✅ STIX export completed![/]")
+        console.print(f"[bold]Bundle ID:[/] {export_result['bundle_id']}")
+        console.print(f"[bold]Objects:[/] {export_result['total_objects']}")
+        console.print(f"[bold]Output:[/] {export_result['output_path']}")
+        
+        # Show object type breakdown
+        console.print(f"\n[bold]Object Types:[/]")
+        for obj_type, count in export_result['object_types'].items():
+            console.print(f"  {obj_type}: {count}")
+        
+    except Exception as e:
+        console.print(f"[red]Error during STIX export:[/] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def search(
     query: str,
     limit: int = typer.Option(15, help="Maximum number of results"),
     namespace: str = typer.Option("personal", help="Namespace to search in")
 ):
     """Search for documents using hybrid retrieval (FAISS + BM25)."""
+    audit_logger = get_audit_logger("search")
+    start_time = time.time()
+    
     try:
         console.print(f"[bold]Searching for:[/] '{query}'")
         console.print(f"[bold]Namespace:[/] {namespace}")
@@ -337,9 +541,34 @@ def search(
         with console.status("[bold green]Searching..."):
             results = retrieve(query, namespaces=(namespace,), topk=limit)
         
+        execution_time_ms = (time.time() - start_time) * 1000
+        
         if not results:
             console.print("[yellow]No results found.[/]")
+            audit_logger.info(
+                "search_completed",
+                query=query,
+                namespace=namespace,
+                limit=limit,
+                results_count=0,
+                execution_time_ms=execution_time_ms,
+                event_type="search"
+            )
             return
+        
+        # Log successful search
+        sources_used = list(set(evidence.source for evidence in results))
+        audit_logger.info(
+            "search_completed",
+            query=query,
+            namespace=namespace,
+            limit=limit,
+            results_count=len(results),
+            sources_used=sources_used,
+            execution_time_ms=execution_time_ms,
+            avg_confidence=sum(evidence.confidence for evidence in results) / len(results),
+            event_type="search"
+        )
         
         console.print(f"[green]Found {len(results)} results:[/]")
         console.print()
@@ -348,6 +577,7 @@ def search(
             console.print(f"[bold]{i}. Document {evidence.document_id} (Page {evidence.page})[/]")
             console.print(f"   [blue]Source:[/] {evidence.source}")
             console.print(f"   [blue]Score:[/] {evidence.score:.3f}")
+            console.print(f"   [blue]Confidence:[/] {evidence.confidence:.3f}")
             console.print(f"   [blue]TLP:[/] {evidence.tlp}")
             if evidence.actors:
                 console.print(f"   [blue]Actors:[/] {', '.join(evidence.actors)}")

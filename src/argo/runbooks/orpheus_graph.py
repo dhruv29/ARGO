@@ -22,6 +22,11 @@ class OrpheusState(TypedDict, total=False):
     draft_report: str              # markdown draft (pre-approval)
     approved: bool
     outputs: Dict[str, str]        # paths to report / jsonl
+    # Additional fields for enhanced functionality
+    alias_candidates: List[Dict[str, Any]]  # RAG-LLM discovered aliases
+    needs_alias_write_approval: bool        # Whether alias approval is needed
+    approved_alias_write: bool              # Whether alias write was approved
+    audit_logger: Any                       # Audit logger instance
 
 # ---- Step functions (call into your core modules; stubbed now)
 def step_resolve(state: OrpheusState) -> OrpheusState:

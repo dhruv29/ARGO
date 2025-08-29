@@ -3,7 +3,8 @@
 import os
 import logging
 import json
-from typing import List, Dict, Any, Optional, Tuple
+import re
+from typing import List, Dict, Any, Optional, Tuple, Set
 from dotenv import load_dotenv
 import psycopg
 
@@ -11,6 +12,200 @@ import psycopg
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def canonicalize_alias(alias: str) -> str:
+    """
+    Canonicalize alias to standard form.
+    
+    Args:
+        alias: Raw alias string
+    
+    Returns:
+        Canonicalized alias string
+    """
+    if not alias:
+        return ""
+    
+    # Convert to lowercase for normalization
+    canonical = alias.lower().strip()
+    
+    # Remove common prefixes/suffixes
+    prefixes_to_remove = ['apt', 'fin', 'group', 'team', 'actor', 'threat']
+    suffixes_to_remove = ['group', 'team', 'actor', 'threat', 'campaign']
+    
+    for prefix in prefixes_to_remove:
+        if canonical.startswith(prefix + ' '):
+            canonical = canonical[len(prefix + ' '):]
+    
+    for suffix in suffixes_to_remove:
+        if canonical.endswith(' ' + suffix):
+            canonical = canonical[:-len(' ' + suffix)]
+    
+    # Normalize common variations
+    variations = {
+        'cozy bear': 'cozybear',
+        'fancy bear': 'fancybear',
+        'voodoo bear': 'voodoobear',
+        'hidden cobra': 'hiddencobra',
+        'wizard spider': 'wizardspider',
+        'trickbot': 'trickbot',
+        'ryuk': 'ryuk'
+    }
+    
+    canonical = variations.get(canonical, canonical)
+    
+    # Remove extra whitespace and normalize
+    canonical = re.sub(r'\s+', ' ', canonical).strip()
+    
+    return canonical
+
+
+def cluster_aliases(aliases: List[str]) -> Dict[str, List[str]]:
+    """
+    Cluster aliases by canonical form to identify duplicates.
+    
+    Args:
+        aliases: List of raw aliases
+    
+    Returns:
+        Dict mapping canonical forms to lists of original aliases
+    """
+    clusters = {}
+    
+    for alias in aliases:
+        if not alias or not alias.strip():
+            continue
+            
+        canonical = canonicalize_alias(alias)
+        if canonical not in clusters:
+            clusters[canonical] = []
+        clusters[canonical].append(alias)
+    
+    return clusters
+
+
+def disambiguate_aliases(aliases: List[str], db_url: str = None) -> Tuple[List[str], Dict[str, Any]]:
+    """
+    Disambiguate aliases using database context and similarity.
+    
+    Args:
+        aliases: List of aliases to disambiguate
+        db_url: Database connection URL
+    
+    Returns:
+        Tuple of (disambiguated_aliases, disambiguation_metadata)
+    """
+    if not db_url:
+        db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+    
+    # Cluster aliases by canonical form
+    clusters = cluster_aliases(aliases)
+    
+    # Get disambiguation metadata
+    metadata = {
+        "total_aliases": len(aliases),
+        "unique_canonical_forms": len(clusters),
+        "clusters": clusters,
+        "disambiguation_rules_applied": []
+    }
+    
+    disambiguated = []
+    
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                for canonical, cluster_aliases in clusters.items():
+                    if len(cluster_aliases) == 1:
+                        # Single alias in cluster - no disambiguation needed
+                        disambiguated.append(cluster_aliases[0])
+                        continue
+                    
+                    # Multiple aliases in cluster - need to disambiguate
+                    logger.info(f"Disambiguating cluster '{canonical}': {cluster_aliases}")
+                    
+                    # Get confidence scores from database
+                    alias_scores = {}
+                    for alias in cluster_aliases:
+                        cur.execute("""
+                            SELECT a.confidence, a.source, COUNT(*) as usage_count
+                            FROM alias a
+                            WHERE a.name ILIKE %s
+                            GROUP BY a.confidence, a.source
+                        """, (f"%{alias}%",))
+                        
+                        rows = cur.fetchall()
+                        if rows:
+                            # Use highest confidence score
+                            max_confidence = max(row[0] for row in rows if row[0])
+                            source = rows[0][1] if rows[0][1] else 'unknown'
+                            usage_count = sum(row[2] for row in rows)
+                            
+                            alias_scores[alias] = {
+                                'confidence': max_confidence,
+                                'source': source,
+                                'usage_count': usage_count
+                            }
+                        else:
+                            alias_scores[alias] = {
+                                'confidence': 0.5,
+                                'source': 'unknown',
+                                'usage_count': 0
+                            }
+                    
+                    # Apply disambiguation rules
+                    best_alias = None
+                    best_score = -1
+                    rule_applied = None
+                    
+                    for alias, scores in alias_scores.items():
+                        # Rule 1: Prefer deterministic sources over LLM
+                        source_multiplier = 1.0
+                        if scores['source'] == 'seed':
+                            source_multiplier = 1.2
+                        elif scores['source'] == 'rag_llm':
+                            source_multiplier = 0.9
+                        
+                        # Rule 2: Prefer higher confidence
+                        confidence_score = scores['confidence'] * source_multiplier
+                        
+                        # Rule 3: Prefer more frequently used aliases
+                        usage_bonus = min(0.1, scores['usage_count'] * 0.02)
+                        
+                        total_score = confidence_score + usage_bonus
+                        
+                        if total_score > best_score:
+                            best_score = total_score
+                            best_alias = alias
+                            rule_applied = f"source={scores['source']}, confidence={scores['confidence']:.2f}, usage={scores['usage_count']}"
+                    
+                    if best_alias:
+                        disambiguated.append(best_alias)
+                        metadata["disambiguation_rules_applied"].append({
+                            "cluster": canonical,
+                            "selected": best_alias,
+                            "alternatives": [a for a in cluster_aliases if a != best_alias],
+                            "rule": rule_applied,
+                            "score": best_score
+                        })
+                    else:
+                        # Fallback: use first alias
+                        disambiguated.append(cluster_aliases[0])
+                        metadata["disambiguation_rules_applied"].append({
+                            "cluster": canonical,
+                            "selected": cluster_aliases[0],
+                            "alternatives": cluster_aliases[1:],
+                            "rule": "fallback",
+                            "score": 0.0
+                        })
+    
+    except Exception as e:
+        logger.warning(f"Failed to disambiguate aliases: {e}")
+        # Fallback: return original aliases
+        disambiguated = aliases
+    
+    metadata["final_aliases"] = disambiguated
+    return disambiguated, metadata
 
 
 def resolve_actor_aliases(actor_name: str, db_url: str = None) -> List[str]:
@@ -90,6 +285,13 @@ def resolve_actor_aliases(actor_name: str, db_url: str = None) -> List[str]:
                 
                 # Remove duplicates and empty strings
                 aliases = list(set(name.strip() for name in aliases if name and name.strip()))
+                
+                # Apply alias disambiguation
+                if len(aliases) > 1:
+                    disambiguated_aliases, disambiguation_metadata = disambiguate_aliases(aliases, db_url)
+                    logger.info(f"Disambiguated {len(aliases)} aliases to {len(disambiguated_aliases)} unique forms")
+                    logger.debug(f"Disambiguation metadata: {disambiguation_metadata}")
+                    aliases = disambiguated_aliases
                 
                 logger.info(f"Deterministic resolve: Found {len(aliases)} aliases for '{actor_name}': {aliases}")
                 
