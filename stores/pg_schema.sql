@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS doc_chunk (
   embed_model TEXT,
   embed_version TEXT,
   vector_dim INT,
+  embedding FLOAT8[],
   faiss_id BIGINT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
