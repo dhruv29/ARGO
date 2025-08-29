@@ -67,12 +67,99 @@ def ingest(
         raise typer.Exit(1)
 
 def _approver(state: OrpheusState) -> bool:
-    console.rule("[bold yellow]Orpheus: Approval Gate")
+    console.rule("[bold yellow]🔍 Orpheus: Approval Gate")
+    
     actor = state.get("actor", "(unknown)")
-    ev_count = len(state.get("evidence") or [])
-    console.print(f"[bold]Actor:[/] {actor} | [bold]Evidence chunks:[/] {ev_count}")
-    # In future: show draft path preview once implemented
-    return Confirm.ask("Publish report & evidence now?", default=False)
+    aliases = state.get("aliases", [])
+    ttps = state.get("ttps", [])
+    cves = state.get("cves", [])
+    evidence = state.get("evidence", [])
+    draft_report = state.get("draft_report", "")
+    plan = state.get("plan", {})
+    
+    # Actor Information
+    console.print(f"[bold blue]🎯 Target Actor:[/] {actor}")
+    if aliases:
+        console.print(f"[bold blue]📋 Aliases:[/] {', '.join(aliases[:5])}")
+        if len(aliases) > 5:
+            console.print(f"   ... and {len(aliases) - 5} more")
+    
+    # Expansion Results
+    console.print()
+    console.print(f"[bold green]🔧 TTPs Found:[/] {len(ttps)}")
+    if ttps:
+        console.print(f"   {', '.join(ttps[:5])}")
+        if len(ttps) > 5:
+            console.print(f"   ... and {len(ttps) - 5} more")
+    
+    console.print(f"[bold green]🚨 CVEs Found:[/] {len(cves)}")
+    if cves:
+        console.print(f"   {', '.join(cves[:5])}")
+        if len(cves) > 5:
+            console.print(f"   ... and {len(cves) - 5} more")
+    
+    # Evidence Statistics
+    console.print()
+    console.print(f"[bold cyan]📊 Evidence Statistics:[/]")
+    console.print(f"   Total Chunks: {len(evidence)}")
+    
+    if evidence:
+        # Evidence by source
+        sources = {}
+        docs = set()
+        high_conf = 0
+        
+        for ev in evidence:
+            source = ev.get('source', 'unknown')
+            sources[source] = sources.get(source, 0) + 1
+            docs.add(ev.get('document_id', 'unknown'))
+            if ev.get('score', 0) > 0.8:
+                high_conf += 1
+        
+        console.print(f"   Documents: {len(docs)}")
+        console.print(f"   High Confidence (>0.8): {high_conf}")
+        console.print(f"   Sources: {dict(sources)}")
+        
+        # Evidence quality distribution
+        scores = [ev.get('score', 0) for ev in evidence]
+        avg_score = sum(scores) / len(scores) if scores else 0
+        console.print(f"   Average Score: {avg_score:.3f}")
+    
+    # Search Plan
+    console.print()
+    console.print(f"[bold magenta]🔍 Search Plan:[/]")
+    search_terms = plan.get('search_terms', [])
+    namespaces = plan.get('namespaces', [])
+    console.print(f"   Terms: {', '.join(search_terms[:5])}")
+    if len(search_terms) > 5:
+        console.print(f"   ... and {len(search_terms) - 5} more")
+    console.print(f"   Namespaces: {', '.join(namespaces)}")
+    
+    # Draft Report Preview
+    console.print()
+    console.print(f"[bold yellow]📄 Draft Report:[/]")
+    console.print(f"   Length: {len(draft_report)} characters")
+    
+    if draft_report:
+        # Show first few lines of the report
+        lines = draft_report.split('\\n')[:5]
+        for line in lines:
+            if line.strip():
+                console.print(f"   {line[:80]}...")
+                break
+    
+    # Vision Usage (placeholder for future implementation)
+    console.print()
+    console.print(f"[bold red]👁️  Vision Usage:[/] Not implemented yet")
+    
+    # Draft Paths
+    console.print()
+    console.print(f"[bold white]📁 Output Paths:[/]")
+    console.print(f"   Report: reports/report_orpheus_{actor}_[timestamp].md")
+    console.print(f"   Evidence: reports/evidence_orpheus_{actor}_[timestamp].jsonl")
+    
+    console.print()
+    return Confirm.ask("🚀 Publish report & evidence now?", default=False)
 
 @app.command()
 def run(
