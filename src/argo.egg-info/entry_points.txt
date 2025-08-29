@@ -1,0 +1,2 @@
+[console_scripts]
+argo = argo.cli.main:app

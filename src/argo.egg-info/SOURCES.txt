@@ -1,0 +1,9 @@
+README.md
+pyproject.toml
+src/argo/__init__.py
+src/argo.egg-info/PKG-INFO
+src/argo.egg-info/SOURCES.txt
+src/argo.egg-info/dependency_links.txt
+src/argo.egg-info/entry_points.txt
+src/argo.egg-info/requires.txt
+src/argo.egg-info/top_level.txt

@@ -5,17 +5,17 @@ description = "Argo — The Argonauts SOC Platform (Orpheus CTI Agent)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-"typer[all]",
-"rich",
-"pydantic>=2",
-"psycopg[binary]",
-"faiss-cpu",
-"pymupdf",
-"python-dotenv",
-"rank-bm25",
-"openai>=1.40.0",
-"tqdm",
-"tenacity",
+  "typer>=0.12.5",   # remove [all]
+  "rich",
+  "pydantic>=2",
+  "psycopg[binary]",
+  "faiss-cpu",
+  "pymupdf",
+  "python-dotenv",
+  "rank-bm25",
+  "openai>=1.40.0",
+  "tqdm",
+  "tenacity",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +23,11 @@ ocr = ["pytesseract", "Pillow"]
 dev = ["ruff", "pytest", "mypy"]
 
 [project.scripts]
-argo = "cli.main:app"
+argo = "argo.cli.main:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["argo"]  # install the argo package (with subpackages)
 
 [tool.ruff]
 line-length = 100
