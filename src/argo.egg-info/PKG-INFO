@@ -15,6 +15,8 @@ Requires-Dist: rank-bm25
 Requires-Dist: openai>=1.40.0
 Requires-Dist: tqdm
 Requires-Dist: tenacity
+Requires-Dist: langgraph>=0.2.21
+Requires-Dist: langchain-core>=0.2.39
 Provides-Extra: ocr
 Requires-Dist: pytesseract; extra == "ocr"
 Requires-Dist: Pillow; extra == "ocr"

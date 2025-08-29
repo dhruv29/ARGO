@@ -1,1 +1,23 @@
-"""Hybrid retrieval: FAISS + BM25; build Evidence objects with doc/page/bbox/snippet/score/confidence/tlp."""
+# signatures only (Cursor can implement)
+def classify_query(q: str) -> str:  # "actor" | "cve" | "ttp" | "general"
+    ...
+
+def prefilter_terms(qtype: str, q: str, pg_conn) -> dict:
+    """Return aliases/synonyms/filters from PG to shrink search space."""
+    ...
+
+def search_faiss(query_vec, k: int, namespace: str) -> list: ...
+def search_bm25(query_text, k: int, namespace: str) -> list: ...
+
+def normalize_and_merge(hits_vec: list, hits_kw: list) -> list: ...
+def mmr_diversify(hits: list, lambda_: float = 0.3, top_k: int = 15) -> list: ...
+
+def retrieve(q: str, namespaces=("personal","global"), topk=15) -> list:
+    """
+    1) classify → prefilter (PG)
+    2) embed → FAISS (per-namespace)
+    3) BM25 (per-namespace)
+    4) normalize + interleave → MMR
+    5) return Evidence[{doc_id,page,bbox,snippet,score,tlp,namespace}]
+    """
+    ...

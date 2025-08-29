@@ -9,6 +9,8 @@ rank-bm25
 openai>=1.40.0
 tqdm
 tenacity
+langgraph>=0.2.21
+langchain-core>=0.2.39
 
 [dev]
 ruff
