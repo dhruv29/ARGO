@@ -134,7 +134,7 @@ def calculate_recency_score(doc_id: str, db_url: str) -> float:
         return 0.5
 
 
-def retrieve_counter_evidence(query: str, primary_evidence: List[Evidence], db_url: str, top_k: int = 5) -> List[Evidence]:
+def retrieve_counter_evidence(query: str, primary_evidence: List[Evidence], db_url: str, k: int = 5) -> List[Evidence]:
     """
     Retrieve counter-evidence to reduce confirmation bias.
     
@@ -142,7 +142,7 @@ def retrieve_counter_evidence(query: str, primary_evidence: List[Evidence], db_u
         query: Original search query
         primary_evidence: Primary evidence results
         db_url: Database connection URL
-        top_k: Number of counter-evidence items to retrieve
+        k: Number of counter-evidence items to retrieve
     
     Returns:
         List of counter-evidence items
@@ -196,7 +196,7 @@ def retrieve_counter_evidence(query: str, primary_evidence: List[Evidence], db_u
     try:
         for counter_query in counter_queries[:5]:  # Limit queries to avoid API costs
             # Use BM25 for counter-evidence (more focused on keywords)
-            results = search_bm25(counter_query, top_k=3, namespace="personal")
+            results = search_bm25(counter_query, k=3, namespace="personal")
             
             for result in results:
                 # Check if this is actually counter-evidence
@@ -204,10 +204,10 @@ def retrieve_counter_evidence(query: str, primary_evidence: List[Evidence], db_u
                     result.confidence *= 0.8  # Slightly reduce confidence for counter-evidence
                     counter_evidence.append(result)
                     
-                    if len(counter_evidence) >= top_k:
+                    if len(counter_evidence) >= k:
                         break
             
-            if len(counter_evidence) >= top_k:
+            if len(counter_evidence) >= k:
                 break
                 
     except Exception as e:
@@ -222,7 +222,7 @@ def retrieve_counter_evidence(query: str, primary_evidence: List[Evidence], db_u
             seen_chunks.add(ev.chunk_id)
             unique_counter_evidence.append(ev)
             
-            if len(unique_counter_evidence) >= top_k:
+            if len(unique_counter_evidence) >= k:
                 break
     
     logger.info(f"Retrieved {len(unique_counter_evidence)} counter-evidence items for query: {query}")
@@ -661,7 +661,7 @@ def retrieve(q: str, namespaces=("personal",), topk=15) -> List[Evidence]:
         evidence.score = composite_confidence
     
     # 7. Retrieve counter-evidence to reduce confirmation bias
-    counter_evidence = retrieve_counter_evidence(q, all_results, db_url, top_k=min(3, topk//3))
+    counter_evidence = retrieve_counter_evidence(q, all_results, db_url, k=min(3, topk//3))
     
     # 8. Apply MMR diversification to primary evidence
     all_results.sort(key=lambda x: x.score, reverse=True)

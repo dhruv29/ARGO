@@ -115,18 +115,18 @@ def disambiguate_aliases(aliases: List[str], db_url: str = None) -> Tuple[List[s
     try:
         with psycopg.connect(db_url) as conn:
             with conn.cursor() as cur:
-                for canonical, cluster_aliases in clusters.items():
-                    if len(cluster_aliases) == 1:
+                for canonical, alias_cluster in clusters.items():
+                    if len(alias_cluster) == 1:
                         # Single alias in cluster - no disambiguation needed
-                        disambiguated.append(cluster_aliases[0])
+                        disambiguated.append(alias_cluster[0])
                         continue
                     
                     # Multiple aliases in cluster - need to disambiguate
-                    logger.info(f"Disambiguating cluster '{canonical}': {cluster_aliases}")
+                    logger.info(f"Disambiguating cluster '{canonical}': {alias_cluster}")
                     
                     # Get confidence scores from database
                     alias_scores = {}
-                    for alias in cluster_aliases:
+                    for alias in alias_cluster:
                         cur.execute("""
                             SELECT a.confidence, a.source, COUNT(*) as usage_count
                             FROM alias a

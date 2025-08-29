@@ -19,11 +19,13 @@ dependencies = [
   "langgraph>=0.2.21",        # NEW
   "langchain-core>=0.2.39",   # lightweight core runtime LangGraph expects
   "structlog>=24.1.0",        # structured logging for audit trails
+  "PyYAML>=6.0",              # YAML policy configuration
 ]
 
 [project.optional-dependencies]
 ocr = ["pytesseract", "Pillow"]
 dev = ["ruff", "pytest", "mypy"]
+local_embeddings = ["sentence-transformers", "torch"]
 
 [project.scripts]
 argo = "argo.cli.main:app"

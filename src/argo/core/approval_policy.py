@@ -2,6 +2,7 @@
 
 import os
 import json
+import yaml
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,7 +55,10 @@ class ApprovalPolicyEngine:
         if policy_path and Path(policy_path).exists():
             try:
                 with open(policy_path, 'r') as f:
-                    policy_data = json.load(f)
+                    if policy_path.endswith('.yaml') or policy_path.endswith('.yml'):
+                        policy_data = yaml.safe_load(f)
+                    else:
+                        policy_data = json.load(f)
                 return ApprovalPolicy(**policy_data)
             except Exception as e:
                 logger.warning(f"Failed to load policy from {policy_path}: {e}")
@@ -162,8 +166,12 @@ class ApprovalPolicyEngine:
         
         # Normalize score
         max_possible_score = sum(rule.weight for rule in self.policy.rules if rule.enabled)
-        if rule.name == "alias_confidence_check" and not state.get("needs_alias_write_approval"):
-            max_possible_score -= 2.0  # Subtract alias rule weight if not applicable
+        
+        # Adjust for alias confidence check if not applicable
+        for rule in self.policy.rules:
+            if rule.name == "alias_confidence_check" and not state.get("needs_alias_write_approval"):
+                max_possible_score -= rule.weight  # Subtract alias rule weight if not applicable
+                break
             
         normalized_score = total_score / max_possible_score if max_possible_score > 0 else 0.0
         
@@ -223,6 +231,12 @@ class ApprovalPolicyEngine:
             ]
             min_alias_confidence = min(alias_confidences) if alias_confidences else 0.0
         
+        # Counter-evidence count
+        counter_evidence_count = sum(1 for e in evidence if getattr(e, 'source', '') == 'counter_evidence')
+        
+        # Coverage metrics
+        coverage_score = self._calculate_coverage_score(evidence, documents, sources)
+        
         return {
             "evidence_count": len(evidence),
             "avg_confidence": sum(confidences) / len(confidences),
@@ -230,7 +244,9 @@ class ApprovalPolicyEngine:
             "unique_documents": len(documents),
             "high_conf_count": high_conf_count,
             "recent_evidence_ratio": recent_evidence_ratio,
-            "min_alias_confidence": min_alias_confidence
+            "min_alias_confidence": min_alias_confidence,
+            "counter_evidence_count": counter_evidence_count,
+            "coverage_score": coverage_score
         }
     
     def _evaluate_rule(self, rule: PolicyRule, metrics: Dict[str, float]) -> Dict[str, Any]:
@@ -258,6 +274,12 @@ class ApprovalPolicyEngine:
             elif rule.condition == "min_alias_confidence >= threshold":
                 passed = metrics["min_alias_confidence"] >= rule.threshold
                 actual_value = metrics["min_alias_confidence"]
+            elif rule.condition == "counter_evidence_count >= threshold":
+                passed = metrics["counter_evidence_count"] >= rule.threshold
+                actual_value = metrics["counter_evidence_count"]
+            elif rule.condition == "coverage_score >= threshold":
+                passed = metrics["coverage_score"] >= rule.threshold
+                actual_value = metrics["coverage_score"]
             else:
                 # Unknown condition
                 passed = True
@@ -318,6 +340,53 @@ class ApprovalPolicyEngine:
                 recommendation += f"\n\nSuggestions:\n{chr(10).join(suggestions)}"
             
             return recommendation
+    
+    def _calculate_coverage_score(self, evidence: List[Any], documents: set, sources: set) -> float:
+        """Calculate coverage score based on evidence distribution."""
+        if not evidence:
+            return 0.0
+        
+        # Document coverage (more documents = higher score)
+        doc_coverage = min(1.0, len(documents) / 3.0)  # Normalize to 3+ docs = 1.0
+        
+        # Source diversity (more sources = higher score)
+        source_coverage = min(1.0, len(sources) / 2.0)  # Normalize to 2+ sources = 1.0
+        
+        # Page coverage (more pages = higher score)
+        pages = set()
+        for ev in evidence:
+            if hasattr(ev, 'page'):
+                pages.add(ev.page)
+        page_coverage = min(1.0, len(pages) / 5.0)  # Normalize to 5+ pages = 1.0
+        
+        # Claims with multiple sources
+        multi_source_claims = 0
+        total_claims = 0
+        
+        # Group evidence by document and page to identify claims
+        claim_groups = {}
+        for ev in evidence:
+            key = f"{getattr(ev, 'document_id', 'unknown')}_{getattr(ev, 'page', 0)}"
+            if key not in claim_groups:
+                claim_groups[key] = []
+            claim_groups[key].append(ev)
+        
+        for claims in claim_groups.values():
+            if len(claims) >= 2:
+                multi_source_claims += 1
+            total_claims += 1
+        
+        multi_source_ratio = multi_source_claims / total_claims if total_claims > 0 else 0.0
+        
+        # Weighted average of all coverage factors
+        coverage_score = (
+            doc_coverage * 0.3 +
+            source_coverage * 0.3 +
+            page_coverage * 0.2 +
+            multi_source_ratio * 0.2
+        )
+        
+        return min(1.0, coverage_score)
 
 
 def load_policy_from_env() -> ApprovalPolicyEngine:

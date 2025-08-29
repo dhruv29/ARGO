@@ -1,7 +1,9 @@
 
+
 import os
 import time
 from pathlib import Path
+from typing import Optional
 import typer
 from rich.console import Console
 from rich.prompt import Confirm
@@ -14,6 +16,7 @@ from argo.core.retrieve import retrieve
 from argo.core.logging_config import configure_logging, get_audit_logger, log_approval_gate
 from argo.core.approval_policy import load_policy_from_env
 from argo.core.stix_export import export_orpheus_results_to_stix
+from argo.core.runbook_state import get_runbook_state_manager
 
 app = typer.Typer(help="Argo CLI — The Argonauts SOC Platform")
 console = Console()
@@ -83,6 +86,16 @@ def _approver(state: OrpheusState) -> bool:
     
     # Initialize policy engine and audit logging
     policy_engine = load_policy_from_env()
+    
+    # Try to load from config directory first
+    config_policy_path = Path("./config/approval_policy.yaml")
+    if config_policy_path.exists():
+        # Set environment variable for policy path
+        os.environ["APPROVAL_POLICY_PATH"] = str(config_policy_path)
+        policy_engine = load_policy_from_env()
+        console.print(f"[dim]Loaded policy from: {config_policy_path}[/]")
+    else:
+        console.print(f"[dim]Using default policy[/]")
     audit_logger = state.get("audit_logger") or get_audit_logger("approval_gate")
     start_time = time.time()
     
@@ -153,6 +166,13 @@ def _approver(state: OrpheusState) -> bool:
         console.print(f"   High Confidence (>0.8): {high_conf}")
         console.print(f"   Average Confidence: {avg_confidence:.3f}")
         console.print(f"   Sources: {dict(sources)}")
+        
+        # Coverage metrics
+        coverage_score = evidence_stats.get("coverage_score", 0.0)
+        counter_evidence_count = evidence_stats.get("counter_evidence_count", 0)
+        
+        console.print(f"   Coverage Score: {coverage_score:.3f}")
+        console.print(f"   Counter-Evidence: {counter_evidence_count}")
     
     # Policy evaluation
     console.print()
@@ -519,6 +539,71 @@ def export_stix(
         
     except Exception as e:
         console.print(f"[red]Error during STIX export:[/] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def list_runs(
+    limit: int = typer.Option(20, help="Maximum number of runs to display")
+):
+    """List recent runbook executions with state information."""
+    console.print(f"[bold]Listing recent runbook executions (limit: {limit})[/]")
+    
+    try:
+        state_manager = get_runbook_state_manager()
+        runs = state_manager.list_runs(limit=limit)
+        
+        if not runs:
+            console.print("[yellow]No runbook executions found[/]")
+            return
+        
+        console.print(f"\n[green]Found {len(runs)} runs:[/]\n")
+        
+        for i, run in enumerate(runs, 1):
+            console.print(f"[bold]{i}. Run ID:[/] {run['run_id']}")
+            console.print(f"   [blue]Timestamp:[/] {run['timestamp']}")
+            console.print(f"   [blue]Execution Time:[/] {run['execution_time_ms']:.0f}ms")
+            console.print(f"   [blue]Nodes:[/] {run['node_count']}")
+            console.print(f"   [blue]Status:[/] {run['status']}")
+            console.print()
+        
+    except Exception as e:
+        console.print(f"[red]Error listing runs:[/] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def replay_run(
+    run_id: str,
+    target_node: Optional[str] = typer.Option(None, help="Node to replay up to")
+):
+    """Replay a specific runbook execution."""
+    console.print(f"[bold]Replaying run:[/] {run_id}")
+    
+    if target_node:
+        console.print(f"[bold]Target node:[/] {target_node}")
+    
+    try:
+        state_manager = get_runbook_state_manager()
+        replay_results = state_manager.replay_run(run_id, target_node)
+        
+        if "error" in replay_results:
+            console.print(f"[red]Replay failed:[/] {replay_results['error']}")
+            raise typer.Exit(1)
+        
+        console.print(f"[green]✅ Replay completed successfully![/]")
+        console.print(f"[bold]Nodes executed:[/] {len(replay_results['executed_nodes'])}")
+        
+        if replay_results["executed_nodes"]:
+            console.print(f"\n[bold]Execution summary:[/]")
+            for node_exec in replay_results["executed_nodes"]:
+                console.print(f"  • {node_exec['node_name']}: {node_exec['execution_time_ms']:.0f}ms")
+        
+        if replay_results["final_state"]:
+            console.print(f"\n[bold]Final state keys:[/] {list(replay_results['final_state'].keys())}")
+        
+    except Exception as e:
+        console.print(f"[red]Error during replay:[/] {e}")
         raise typer.Exit(1)
 
 

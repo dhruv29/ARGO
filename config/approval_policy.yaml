@@ -1,0 +1,137 @@
+# Argo Approval Policy Configuration
+# This file configures the policy-driven approval gate for Orpheus CTI agent
+
+policy:
+  name: "enterprise_orpheus"
+  description: "Enterprise-grade approval policy for Orpheus CTI agent"
+  min_total_score: 0.75
+  require_all_required_rules: true
+  
+  # Rule definitions with thresholds and weights
+  rules:
+    - name: "min_evidence_count"
+      description: "Minimum number of evidence items required"
+      condition: "evidence_count >= threshold"
+      threshold: 5.0
+      weight: 2.0
+      required: true
+      enabled: true
+    
+    - name: "min_avg_confidence"
+      description: "Minimum average evidence confidence score"
+      condition: "avg_confidence >= threshold"
+      threshold: 0.65
+      weight: 2.5
+      required: true
+      enabled: true
+    
+    - name: "multi_source_evidence"
+      description: "Evidence from multiple sources preferred"
+      condition: "unique_sources >= threshold"
+      threshold: 2.0
+      weight: 1.5
+      required: false
+      enabled: true
+    
+    - name: "multi_document_evidence"
+      description: "Evidence from multiple documents preferred"
+      condition: "unique_documents >= threshold"
+      threshold: 2.0
+      weight: 1.5
+      required: false
+      enabled: true
+    
+    - name: "high_confidence_evidence"
+      description: "At least some high-confidence evidence"
+      condition: "high_conf_count >= threshold"
+      threshold: 2.0
+      weight: 1.0
+      required: false
+      enabled: true
+    
+    - name: "recent_evidence"
+      description: "Evidence from recent documents preferred"
+      condition: "recent_evidence_ratio >= threshold"
+      threshold: 0.4
+      weight: 1.0
+      required: false
+      enabled: true
+    
+    - name: "alias_confidence_check"
+      description: "New aliases must meet confidence threshold"
+      condition: "min_alias_confidence >= threshold"
+      threshold: 0.70
+      weight: 2.0
+      required: true
+      enabled: true
+    
+    - name: "counter_evidence_presence"
+      description: "Counter-evidence should be present to reduce bias"
+      condition: "counter_evidence_count >= threshold"
+      threshold: 1.0
+      weight: 1.0
+      required: false
+      enabled: true
+    
+    - name: "coverage_metrics"
+      description: "Minimum coverage of documents and pages"
+      condition: "coverage_score >= threshold"
+      threshold: 0.6
+      weight: 1.5
+      required: false
+      enabled: true
+
+# Evidence scoring configuration
+evidence_scoring:
+  # Weights for different scoring components
+  weights:
+    semantic_similarity: 0.35
+    lexical_matching: 0.25
+    layout_position: 0.15
+    entity_density: 0.20
+    recency: 0.05
+  
+  # Thresholds for different confidence levels
+  thresholds:
+    high_confidence: 0.8
+    medium_confidence: 0.6
+    low_confidence: 0.4
+  
+  # Layout scoring parameters
+  layout:
+    page_boost_first: 1.3
+    page_boost_early: 1.1
+    y_position_weight: 0.7
+  
+  # Entity detection patterns
+  entities:
+    cve_pattern: r'\bcve-\d{4}-\d{4,}\b'
+    technique_pattern: r'\bt\d{4}(\.\d{3})?'
+    actor_patterns:
+      - r'\bapt\d+\b'
+      - r'\bfin\d+\b'
+      - r'\b(malware|trojan|backdoor|ransomware)'
+      - r'\b(c2|command.and.control|exfiltration)'
+
+# Counter-evidence configuration
+counter_evidence:
+  enabled: true
+  max_queries: 5
+  min_confidence: 0.5
+  patterns:
+    - "false positive"
+    - "misattribution"
+    - "different actor"
+    - "unrelated"
+    - "no evidence"
+    - "disputed"
+    - "debunked"
+    - "correction"
+    - "clarification"
+
+# Coverage metrics configuration
+coverage:
+  min_documents: 2
+  min_pages: 3
+  min_claims_with_multiple_sources: 0.7
+  source_diversity_bonus: 0.1
