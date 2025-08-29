@@ -1,0 +1,34 @@
+[project]
+name = "argo"
+version = "0.1.0"
+description = "Argo — The Argonauts SOC Platform (Orpheus CTI Agent)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+"typer[all]",
+"rich",
+"pydantic>=2",
+"psycopg[binary]",
+"faiss-cpu",
+"pymupdf",
+"python-dotenv",
+"rank-bm25",
+"openai>=1.40.0",
+"tqdm",
+"tenacity",
+]
+
+[project.optional-dependencies]
+ocr = ["pytesseract", "Pillow"]
+dev = ["ruff", "pytest", "mypy"]
+
+[project.scripts]
+argo = "cli.main:app"
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+warn_unused_ignores = true

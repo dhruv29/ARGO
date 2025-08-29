@@ -1,0 +1,8 @@
+.env
+.venv/
+pycache/
+*.pyc
+object_store/
+reports/
+.cache/
+flows/
