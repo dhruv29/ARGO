@@ -1,0 +1,9 @@
+{
+  "input_directory": "./samples",
+  "actor_name": "FIN7",
+  "batch_size": 5,
+  "use_ocr": true,
+  "embedding_model": "text-embedding-3-small",
+  "index_type": "hnsw",
+  "max_workers": 4
+}

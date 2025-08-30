@@ -20,6 +20,9 @@ from argo.core.approval_policy import load_policy_from_env
 from argo.core.stix_export import export_orpheus_results_to_stix
 from argo.core.runbook_state import get_runbook_state_manager
 from argo.core.output_validator import get_output_validator
+from argo.cli.config_manager import get_config_manager
+from argo.cli.workflow_manager import get_workflow_manager
+from argo.cli.help_system import get_help_system
 
 app = typer.Typer(help="Argo CLI — The Argonauts SOC Platform")
 console = Console()
@@ -806,6 +809,685 @@ def search(
     except Exception as e:
         console.print(f"[red]Error during search:[/] {e}")
         raise typer.Exit(1)
+
+
+@app.command()
+def config(
+    action: str = typer.Argument(..., help="Action: show, set, reset, validate"),
+    key: Optional[str] = typer.Argument(None, help="Configuration key"),
+    value: Optional[str] = typer.Argument(None, help="Configuration value")
+):
+    """Manage Argo configuration settings."""
+    console.print(f"[bold]🔧 Configuration Management[/]")
+    
+    if action == "show":
+        _show_configuration()
+    elif action == "set":
+        if not key or not value:
+            console.print("[red]Error:[/] Both key and value required for 'set' action")
+            raise typer.Exit(1)
+        _set_configuration(key, value)
+    elif action == "reset":
+        if not key:
+            console.print("[red]Error:[/] Key required for 'reset' action")
+            raise typer.Exit(1)
+        _reset_configuration(key)
+    elif action == "validate":
+        _validate_configuration()
+    else:
+        console.print(f"[red]Error:[/] Unknown action: {action}")
+        console.print("Available actions: show, set, reset, validate")
+        raise typer.Exit(1)
+
+
+def _show_configuration():
+    """Display current configuration."""
+    config_items = {
+        "Database": os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter"),
+        "OpenAI API Key": "***" if os.getenv("OPENAI_API_KEY") else "Not set",
+        "Log Level": os.getenv("LOG_LEVEL", "INFO"),
+        "JSON Logs": os.getenv("JSON_LOGS", "false"),
+        "Policy Path": os.getenv("APPROVAL_POLICY_PATH", "default"),
+        "Runbook State Dir": os.getenv("RUNBOOK_STATE_DIR", "./runbook_states"),
+        "Local Embedding Model": os.getenv("LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    }
+    
+    console.print("\n[bold]Current Configuration:[/]")
+    for key, value in config_items.items():
+        console.print(f"  [blue]{key}:[/] {value}")
+
+
+def _set_configuration(key: str, value: str):
+    """Set a configuration value."""
+    # This is a simplified version - in production, you'd want to persist to a config file
+    os.environ[key] = value
+    console.print(f"[green]✅ Set {key} = {value}[/]")
+    console.print("[yellow]Note:[/] This change is only for the current session")
+
+
+def _reset_configuration(key: str):
+    """Reset a configuration value to default."""
+    if key in os.environ:
+        del os.environ[key]
+        console.print(f"[green]✅ Reset {key} to default[/]")
+    else:
+        console.print(f"[yellow]Note:[/] {key} was not set")
+
+
+def _validate_configuration():
+    """Validate current configuration."""
+    console.print("[bold]Validating configuration...[/]")
+    
+    issues = []
+    
+    # Check required settings
+    if not os.getenv("DATABASE_URL"):
+        issues.append("DATABASE_URL not set")
+    
+    if not os.getenv("OPENAI_API_KEY"):
+        issues.append("OPENAI_API_KEY not set")
+    
+    # Check database connectivity
+    try:
+        db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        console.print("[green]✅ Database connection: OK[/]")
+    except Exception as e:
+        issues.append(f"Database connection failed: {e}")
+    
+    # Check policy file
+    policy_path = Path("./config/approval_policy.yaml")
+    if policy_path.exists():
+        console.print("[green]✅ Policy file: Found[/]")
+    else:
+        issues.append("Policy file not found: config/approval_policy.yaml")
+    
+    if issues:
+        console.print(f"\n[red]❌ Configuration issues found:[/]")
+        for issue in issues:
+            console.print(f"  • {issue}")
+        raise typer.Exit(1)
+    else:
+        console.print(f"\n[green]✅ Configuration validation passed![/]")
+
+
+@app.command()
+def batch(
+    operation: str = typer.Argument(..., help="Operation: ingest, embed, index, analyze"),
+    input_path: str = typer.Argument(..., help="Input directory or file pattern"),
+    config_file: Optional[str] = typer.Option(None, "--config", help="Batch configuration file")
+):
+    """Execute batch operations on multiple inputs."""
+    console.print(f"[bold]🔄 Batch Operation: {operation}[/]")
+    
+    if operation == "ingest":
+        _batch_ingest(input_path, config_file)
+    elif operation == "embed":
+        _batch_embed(input_path, config_file)
+    elif operation == "index":
+        _batch_index(input_path, config_file)
+    elif operation == "analyze":
+        _batch_analyze(input_path, config_file)
+    else:
+        console.print(f"[red]Error:[/] Unknown operation: {operation}")
+        console.print("Available operations: ingest, embed, index, analyze")
+        raise typer.Exit(1)
+
+
+def _batch_ingest(input_path: str, config_file: Optional[str]):
+    """Execute batch ingestion."""
+    console.print(f"[blue]Batch ingesting from:[/] {input_path}")
+    
+    # Parse input path pattern
+    input_pattern = Path(input_path)
+    if input_pattern.is_dir():
+        # Directory - process all PDFs
+        pdf_files = list(input_pattern.glob("**/*.pdf"))
+        console.print(f"Found {len(pdf_files)} PDF files")
+        
+        if not pdf_files:
+            console.print("[yellow]No PDF files found[/]")
+            return
+        
+        # Process in batches
+        batch_size = 5
+        for i in range(0, len(pdf_files), batch_size):
+            batch = pdf_files[i:i + batch_size]
+            console.print(f"\n[bold]Processing batch {i//batch_size + 1}:[/] {len(batch)} files")
+            
+            for pdf_file in batch:
+                try:
+                    console.print(f"  Processing: {pdf_file.name}")
+                    # Create temporary directory for single file
+                    temp_dir = Path(f"./temp_batch_{pdf_file.stem}")
+                    temp_dir.mkdir(exist_ok=True)
+                    
+                    # Copy file to temp directory
+                    import shutil
+                    shutil.copy2(pdf_file, temp_dir / pdf_file.name)
+                    
+                    # Ingest
+                    ingest_directory(
+                        directory_path=temp_dir,
+                        object_store_dir=Path("./object_store"),
+                        db_url=os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter"),
+                        min_tokens=300,
+                        max_tokens=800,
+                        use_ocr_fallback=True
+                    )
+                    
+                    # Cleanup
+                    shutil.rmtree(temp_dir)
+                    console.print(f"  [green]✅ {pdf_file.name} processed[/]")
+                    
+                except Exception as e:
+                    console.print(f"  [red]❌ {pdf_file.name} failed: {e}[/]")
+        
+        console.print(f"\n[green]✅ Batch ingestion complete![/]")
+        
+    else:
+        console.print("[red]Error:[/] Input path must be a directory for batch operations")
+
+
+def _batch_embed(input_path: str, config_file: Optional[str]):
+    """Execute batch embedding."""
+    console.print(f"[blue]Batch embedding from:[/] {input_path}")
+    
+    try:
+        with console.status("[bold green]Generating embeddings..."):
+            results = embed_all_chunks(
+                db_url=os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+            )
+        
+        console.print(f"[green]✅ Batch embedding complete![/]")
+        console.print(f"[bold]Chunks processed:[/] {results.get('total_chunks', 0) if isinstance(results, dict) else 0}")
+        console.print(f"[bold]Embeddings generated:[/] {results.get('embeddings_generated', 0) if isinstance(results, dict) else 0}")
+        
+    except Exception as e:
+        console.print(f"[red]Error during batch embedding:[/] {e}")
+        raise typer.Exit(1)
+
+
+def _batch_index(input_path: str, config_file: Optional[str]):
+    """Execute batch indexing."""
+    console.print(f"[blue]Batch indexing from:[/] {input_path}")
+    
+    try:
+        with console.status("[bold green]Building FAISS index..."):
+            results = build_faiss_index(
+                db_url=os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter"),
+                index_path=Path("./faiss_index")
+            )
+        
+        console.print(f"[green]✅ Batch indexing complete![/]")
+        console.print(f"[bold]Index built:[/] {results.get('index_path', 'N/A') if isinstance(results, dict) else 'N/A'}")
+        console.print(f"[bold]Vectors indexed:[/] {results.get('vector_count', 0) if isinstance(results, dict) else 0}")
+        
+    except Exception as e:
+        console.print(f"[red]Error during batch indexing:[/] {e}")
+        raise typer.Exit(1)
+
+
+def _batch_analyze(input_path: str, config_file: Optional[str]):
+    """Execute batch analysis."""
+    console.print(f"[blue]Batch analysis from:[/] {input_path}")
+    
+    # This would be enhanced with actual batch analysis logic
+    console.print("[yellow]Batch analysis not yet implemented[/]")
+
+
+@app.command()
+def interactive():
+    """Start interactive Argo session."""
+    console.print("[bold]🚀 Welcome to Interactive Argo![/]")
+    console.print("Type 'help' for available commands, 'exit' to quit.\n")
+    
+    while True:
+        try:
+            command = input("argo> ").strip()
+            
+            if command.lower() in ['exit', 'quit', 'q']:
+                console.print("[yellow]Goodbye![/]")
+                break
+            elif command.lower() == 'help':
+                _show_interactive_help()
+            elif command.lower() == 'status':
+                _show_system_status()
+            elif command.lower() == 'config':
+                _show_configuration()
+            elif command.lower().startswith('ingest '):
+                path = command[7:].strip()
+                console.print(f"[blue]Ingesting:[/] {path}")
+                # This would execute the actual ingestion
+                console.print("[yellow]Interactive ingestion not yet implemented[/]")
+            elif command.lower().startswith('search '):
+                query = command[7:].strip()
+                console.print(f"[blue]Searching:[/] {query}")
+                # This would execute the actual search
+                console.print("[yellow]Interactive search not yet implemented[/]")
+            elif command.lower().startswith('analyze '):
+                actor = command[8:].strip()
+                console.print(f"[blue]Analyzing actor:[/] {actor}")
+                # This would execute Orpheus analysis
+                console.print("[yellow]Interactive analysis not yet implemented[/]")
+            else:
+                console.print(f"[red]Unknown command:[/] {command}")
+                console.print("Type 'help' for available commands")
+                
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Use 'exit' to quit[/]")
+        except Exception as e:
+            console.print(f"[red]Error:[/] {e}")
+
+
+def _show_interactive_help():
+    """Show interactive mode help."""
+    console.print("\n[bold]Interactive Commands:[/]")
+    console.print("  [blue]help[/]     - Show this help")
+    console.print("  [blue]status[/]   - Show system status")
+    console.print("  [blue]config[/]   - Show configuration")
+    console.print("  [blue]ingest <path>[/] - Ingest PDFs from path")
+    console.print("  [blue]search <query>[/] - Search documents")
+    console.print("  [blue]analyze <actor>[/] - Analyze threat actor")
+    console.print("  [blue]exit[/]     - Quit interactive mode\n")
+
+
+def _show_system_status():
+    """Show system status in interactive mode."""
+    console.print("\n[bold]System Status:[/]")
+    
+    # Database status
+    try:
+        db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM document")
+                doc_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM doc_chunk")
+                chunk_count = cur.fetchone()[0]
+        
+        console.print(f"  [green]Database:[/] Connected")
+        console.print(f"  [blue]Documents:[/] {doc_count}")
+        console.print(f"  [blue]Chunks:[/] {chunk_count}")
+        
+    except Exception as e:
+        console.print(f"  [red]Database:[/] Connection failed - {e}")
+    
+    # FAISS index status
+    index_path = Path("./faiss_index")
+    if index_path.exists():
+        console.print(f"  [green]FAISS Index:[/] Available")
+    else:
+        console.print(f"  [yellow]FAISS Index:[/] Not built")
+    
+    # Reports directory
+    reports_dir = Path("./reports")
+    if reports_dir.exists():
+        report_files = list(reports_dir.glob("*.md"))
+        console.print(f"  [green]Reports:[/] {len(report_files)} available")
+    else:
+        console.print(f"  [yellow]Reports:[/] Directory not found")
+
+
+@app.command()
+def progress(
+    operation: str = typer.Argument(..., help="Operation: ingest, embed, index, analyze"),
+    show_details: bool = typer.Option(False, "--details", help="Show detailed progress")
+):
+    """Show progress for long-running operations."""
+    console.print(f"[bold]📊 Progress: {operation}[/]")
+    
+    if operation == "ingest":
+        _show_ingest_progress(show_details)
+    elif operation == "embed":
+        _show_embed_progress(show_details)
+    elif operation == "index":
+        _show_index_progress(show_details)
+    elif operation == "analyze":
+        _show_analyze_progress(show_details)
+    else:
+        console.print(f"[red]Error:[/] Unknown operation: {operation}")
+        console.print("Available operations: ingest, embed, index, analyze")
+        raise typer.Exit(1)
+
+
+def _show_ingest_progress(show_details: bool):
+    """Show ingestion progress."""
+    try:
+        db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM document")
+                total_docs = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM doc_chunk")
+                total_chunks = cur.fetchone()[0]
+                
+                if show_details:
+                    cur.execute("""
+                        SELECT source, COUNT(*) as count 
+                        FROM document 
+                        GROUP BY source 
+                        ORDER BY count DESC
+                    """)
+                    sources = cur.fetchall()
+                    
+                    cur.execute("""
+                        SELECT DATE(created_at) as date, COUNT(*) as count 
+                        FROM document 
+                        GROUP BY DATE(created_at) 
+                        ORDER BY date DESC 
+                        LIMIT 7
+                    """)
+                    recent = cur.fetchall()
+        
+        console.print(f"[bold]Total Documents:[/] {total_docs}")
+        console.print(f"[bold]Total Chunks:[/] {total_chunks}")
+        
+        if show_details and sources:
+            console.print(f"\n[bold]By Source:[/]")
+            for source, count in sources:
+                console.print(f"  {source}: {count}")
+        
+        if show_details and recent:
+            console.print(f"\n[bold]Recent Activity:[/]")
+            for date, count in recent:
+                console.print(f"  {date}: {count} documents")
+        
+    except Exception as e:
+        console.print(f"[red]Error getting progress:[/] {e}")
+
+
+def _show_embed_progress(show_details: bool):
+    """Show embedding progress."""
+    try:
+        db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM doc_chunk")
+                total_chunks = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM doc_chunk WHERE embedding IS NOT NULL")
+                embedded_chunks = cur.fetchone()[0]
+                
+                if show_details:
+                    cur.execute("""
+                        SELECT model_name, COUNT(*) as count 
+                        FROM doc_chunk 
+                        WHERE embedding IS NOT NULL 
+                        GROUP BY model_name
+                    """)
+                    models = cur.fetchall()
+        
+        progress_pct = (embedded_chunks / total_chunks * 100) if total_chunks > 0 else 0
+        console.print(f"[bold]Total Chunks:[/] {total_chunks}")
+        console.print(f"[bold]Embedded:[/] {embedded_chunks}")
+        console.print(f"[bold]Progress:[/] {progress_pct:.1f}%")
+        
+        if show_details and models:
+            console.print(f"\n[bold]By Model:[/]")
+            for model, count in models:
+                console.print(f"  {model}: {count}")
+        
+    except Exception as e:
+        console.print(f"[red]Error getting progress:[/] {e}")
+
+
+def _show_index_progress(show_details: bool):
+    """Show indexing progress."""
+    index_path = Path("./faiss_index")
+    
+    if not index_path.exists():
+        console.print("[yellow]FAISS index not built yet[/]")
+        return
+    
+    try:
+        # This would be enhanced with actual FAISS index statistics
+        console.print(f"[bold]Index Location:[/] {index_path}")
+        console.print(f"[bold]Status:[/] Built")
+        
+        if show_details:
+            console.print(f"[yellow]Detailed index statistics not yet implemented[/]")
+        
+    except Exception as e:
+        console.print(f"[red]Error getting index progress:[/] {e}")
+
+
+def _show_analyze_progress(show_details: bool):
+    """Show analysis progress."""
+    reports_dir = Path("./reports")
+    
+    if not reports_dir.exists():
+        console.print("[yellow]No reports directory found[/]")
+        return
+    
+    try:
+        report_files = list(reports_dir.glob("*.md"))
+        evidence_files = list(reports_dir.glob("*.jsonl"))
+        validation_files = list(reports_dir.glob("validation_*.md"))
+        
+        console.print(f"[bold]Reports Generated:[/] {len(report_files)}")
+        console.print(f"[bold]Evidence Packs:[/] {len(evidence_files)}")
+        console.print(f"[bold]Validation Reports:[/] {len(validation_files)}")
+        
+        if show_details and report_files:
+            console.print(f"\n[bold]Recent Reports:[/]")
+            recent_reports = sorted(report_files, key=lambda x: x.stat().st_mtime, reverse=True)[:5]
+            for report in recent_reports:
+                mtime = datetime.fromtimestamp(report.stat().st_mtime)
+                console.print(f"  {report.name} ({mtime.strftime('%Y-%m-%d %H:%M')})")
+        
+    except Exception as e:
+        console.print(f"[red]Error getting analysis progress:[/] {e}")
+
+
+@app.command()
+def export(
+    format: str = typer.Argument(..., help="Export format: stix, json, csv"),
+    output_path: str = typer.Option("./export", help="Output directory"),
+    filters: Optional[str] = typer.Option(None, help="Filter criteria (JSON)")
+):
+    """Export data in various formats."""
+    console.print(f"[bold]📤 Export: {format.upper()}[/]")
+    
+    if format.lower() == "stix":
+        _export_stix(output_path, filters)
+    elif format.lower() == "json":
+        _export_json(output_path, filters)
+    elif format.lower() == "csv":
+        _export_csv(output_path, filters)
+    else:
+        console.print(f"[red]Error:[/] Unknown format: {format}")
+        console.print("Available formats: stix, json, csv")
+        raise typer.Exit(1)
+
+
+def _export_stix(output_path: str, filters: Optional[str]):
+    """Export to STIX format."""
+    console.print(f"[blue]Exporting to STIX:[/] {output_path}")
+    
+    try:
+        # Parse filters if provided
+        filter_dict = {}
+        if filters:
+            try:
+                filter_dict = json.loads(filters)
+            except json.JSONDecodeError:
+                console.print("[red]Error:[/] Invalid JSON in filters")
+                raise typer.Exit(1)
+        
+        # This would be enhanced with actual STIX export logic
+        console.print("[yellow]STIX export not yet implemented[/]")
+        
+    except Exception as e:
+        console.print(f"[red]Error during STIX export:[/] {e}")
+        raise typer.Exit(1)
+
+
+def _export_json(output_path: str, filters: Optional[str]):
+    """Export to JSON format."""
+    console.print(f"[blue]Exporting to JSON:[/] {output_path}")
+    
+    try:
+        # Parse filters if provided
+        filter_dict = {}
+        if filters:
+            try:
+                filter_dict = json.loads(filters)
+            except json.JSONDecodeError:
+                console.print("[red]Error:[/] Invalid JSON in filters")
+                raise typer.Exit(1)
+        
+        # This would be enhanced with actual JSON export logic
+        console.print("[yellow]JSON export not yet implemented[/]")
+        
+    except Exception as e:
+        console.print(f"[red]Error during JSON export:[/] {e}")
+        raise typer.Exit(1)
+
+
+def _export_csv(output_path: str, filters: Optional[str]):
+    """Export to CSV format."""
+    console.print(f"[blue]Exporting to CSV:[/] {output_path}")
+    
+    try:
+        # Parse filters if provided
+        filter_dict = {}
+        if filters:
+            try:
+                filter_dict = json.loads(filters)
+            except json.JSONDecodeError:
+                console.print("[red]Error:[/] Invalid JSON in filters")
+                raise typer.Exit(1)
+        
+        # This would be enhanced with actual CSV export logic
+        console.print("[yellow]CSV export not yet implemented[/]")
+        
+    except Exception as e:
+        console.print(f"[red]Error during CSV export:[/] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def help_cmd(
+    topic: Optional[str] = typer.Argument(None, help="Help topic: main, workflow, config, examples, troubleshooting, api")
+):
+    """Show comprehensive help for Argo CLI."""
+    help_system = get_help_system(console)
+    
+    if not topic or topic == "main":
+        help_system.show_main_help()
+    elif topic == "workflow":
+        help_system.show_workflow_help()
+    elif topic == "config":
+        help_system.show_configuration_help()
+    elif topic == "examples":
+        help_system.show_examples()
+    elif topic == "troubleshooting":
+        help_system.show_troubleshooting()
+    elif topic == "api":
+        help_system.show_api_reference()
+    elif topic == "interactive":
+        help_system.show_interactive_help()
+    else:
+        console.print(f"[red]Unknown help topic: {topic}[/]")
+        console.print("Available topics: main, workflow, config, examples, troubleshooting, api, interactive")
+        raise typer.Exit(1)
+
+
+@app.command()
+def workflow(
+    action: str = typer.Argument(..., help="Action: list, run, info"),
+    workflow_name: Optional[str] = typer.Argument(None, help="Workflow name"),
+    context_file: Optional[str] = typer.Option(None, "--context", help="Context file (JSON)")
+):
+    """Manage and execute Argo workflows."""
+    console.print(f"[bold]🔄 Workflow Management[/]")
+    
+    workflow_manager = get_workflow_manager()
+    
+    if action == "list":
+        _list_workflows(workflow_manager)
+    elif action == "run":
+        if not workflow_name:
+            console.print("[red]Error:[/] Workflow name required for 'run' action")
+            raise typer.Exit(1)
+        _run_workflow(workflow_manager, workflow_name, context_file)
+    elif action == "info":
+        if not workflow_name:
+            console.print("[red]Error:[/] Workflow name required for 'info' action")
+            raise typer.Exit(1)
+        _show_workflow_info(workflow_manager, workflow_name)
+    else:
+        console.print(f"[red]Error:[/] Unknown action: {action}")
+        console.print("Available actions: list, run, info")
+        raise typer.Exit(1)
+
+
+def _list_workflows(workflow_manager):
+    """List available workflows."""
+    workflows = workflow_manager.list_workflows()
+    
+    if not workflows:
+        console.print("[yellow]No workflows available[/]")
+        return
+    
+    console.print(f"\n[bold]Available Workflows:[/]")
+    for workflow_name in workflows:
+        workflow = workflow_manager.get_workflow(workflow_name)
+        if workflow:
+            console.print(f"  [blue]{workflow_name}[/] - {workflow.description}")
+
+
+def _run_workflow(workflow_manager, workflow_name: str, context_file: Optional[str]):
+    """Run a workflow."""
+    workflow = workflow_manager.get_workflow(workflow_name)
+    if not workflow:
+        console.print(f"[red]Error:[/] Workflow '{workflow_name}' not found")
+        raise typer.Exit(1)
+    
+    # Load context if provided
+    context = {}
+    if context_file:
+        try:
+            with open(context_file, 'r') as f:
+                context = json.load(f)
+            console.print(f"[blue]Loaded context from:[/] {context_file}")
+        except Exception as e:
+            console.print(f"[red]Error loading context file:[/] {e}")
+            raise typer.Exit(1)
+    
+    # Execute workflow
+    success = workflow_manager.execute_workflow(workflow_name, context, console)
+    
+    if success:
+        # Show summary
+        summary = workflow.get_summary()
+        console.print(f"\n[bold]Workflow Summary:[/]")
+        console.print(f"  Status: {summary['status']}")
+        console.print(f"  Duration: {summary['duration']:.1f}s")
+        console.print(f"  Steps: {summary['completed_steps']}/{summary['total_steps']} completed")
+    else:
+        console.print(f"\n[red]Workflow execution failed[/]")
+
+
+def _show_workflow_info(workflow_manager, workflow_name: str):
+    """Show detailed workflow information."""
+    workflow = workflow_manager.get_workflow(workflow_name)
+    if not workflow:
+        console.print(f"[red]Error:[/] Workflow '{workflow_name}' not found")
+        raise typer.Exit(1)
+    
+    console.print(f"\n[bold]Workflow: {workflow.name}[/]")
+    console.print(f"Description: {workflow.description}")
+    console.print(f"Total Steps: {len(workflow.steps)}")
+    
+    console.print(f"\n[bold]Steps:[/]")
+    for i, step in enumerate(workflow.steps, 1):
+        required = "Required" if step.required else "Optional"
+        console.print(f"  {i}. [blue]{step.name}[/] ({required})")
+        if step.description:
+            console.print(f"     {step.description}")
 
 
 if __name__ == "__main__":
