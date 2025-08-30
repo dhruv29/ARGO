@@ -220,10 +220,12 @@ def step_approval_gate(state: OrpheusState, *, approver=None) -> OrpheusState:
     return state
 
 def step_publish(state: OrpheusState) -> OrpheusState:
-    """Write markdown + jsonl evidence if approved."""
+    """Write enhanced markdown + jsonl evidence if approved."""
     import json
     from datetime import datetime
-    from ..core.summarize import create_evidence_pack
+    from ..core.report_templates import get_report_template
+    from ..core.enhanced_evidence import create_enhanced_evidence_pack
+    from ..core.output_validator import get_output_validator
     
     if not state.get("approved"):
         logger.info("Report not approved, skipping publish")
@@ -233,7 +235,7 @@ def step_publish(state: OrpheusState) -> OrpheusState:
     draft_report = state.get("draft_report", "")
     evidence = state.get("evidence", [])
     
-    logger.info(f"Publishing approved report for {actor}")
+    logger.info(f"Publishing enhanced report for {actor}")
     
     # Create output directory
     reports_dir = Path("reports")
@@ -243,33 +245,74 @@ def step_publish(state: OrpheusState) -> OrpheusState:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_filename = f"report_orpheus_{actor}_{timestamp}.md"
     evidence_filename = f"evidence_orpheus_{actor}_{timestamp}.jsonl"
+    validation_filename = f"validation_orpheus_{actor}_{timestamp}.md"
     
     report_path = reports_dir / report_filename
     evidence_path = reports_dir / evidence_filename
+    validation_path = reports_dir / validation_filename
     
     try:
-        # Write markdown report
+        # Generate enhanced report using template
+        metadata = {
+            "tlp": "CLEAR",
+            "actor": actor,
+            "evidence_count": len(evidence),
+            "generation_method": "orpheus_template"
+        }
+        
+        template = get_report_template("threat_profile", actor, evidence, metadata)
+        enhanced_report = template.generate_full_report()
+        
+        # Write enhanced markdown report
         with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(draft_report)
+            f.write(enhanced_report)
         
-        # Create and write evidence pack
-        evidence_pack = create_evidence_pack(evidence, actor)
+        # Create enhanced evidence pack
+        evidence_pack = create_enhanced_evidence_pack(evidence, actor, metadata)
+        enhanced_pack = evidence_pack.create_enhanced_pack()
         
+        # Write enhanced evidence pack
         with open(evidence_path, 'w', encoding='utf-8') as f:
-            for item in evidence_pack:
-                f.write(json.dumps(item) + '\n')
+            for item in enhanced_pack:
+                f.write(json.dumps(item, default=str) + '\n')
         
+        # Validate outputs
+        validator = get_output_validator()
+        report_validation = validator.validate_markdown_report(enhanced_report, len(evidence))
+        evidence_validation = validator.validate_evidence_pack(enhanced_pack)
+        
+        validations = {
+            "markdown_report": report_validation,
+            "evidence_pack": evidence_validation
+        }
+        
+        # Generate validation report
+        validation_report = validator.generate_validation_report(validations)
+        
+        with open(validation_path, 'w', encoding='utf-8') as f:
+            f.write(validation_report)
+        
+        # Update state with outputs and validation
         state["outputs"] = {
             "report_md": str(report_path),
             "evidence_jsonl": str(evidence_path),
-            "report_size": len(draft_report),
-            "evidence_count": len(evidence_pack)
+            "validation_report": str(validation_path),
+            "report_size": len(enhanced_report),
+            "evidence_count": len(enhanced_pack),
+            "validation": {
+                "report_valid": report_validation.get("valid", False),
+                "report_score": report_validation.get("score", 0.0),
+                "evidence_valid": evidence_validation.get("valid", False),
+                "evidence_score": evidence_validation.get("score", 0.0)
+            }
         }
         
-        logger.info(f"Published report to {report_path} and evidence to {evidence_path}")
+        logger.info(f"Published enhanced report to {report_path}")
+        logger.info(f"Published enhanced evidence to {evidence_path}")
+        logger.info(f"Published validation report to {validation_path}")
         
     except Exception as e:
-        logger.error(f"Failed to publish report: {e}")
+        logger.error(f"Failed to publish enhanced report: {e}")
         state["outputs"] = {"error": str(e)}
     
     return state

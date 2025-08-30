@@ -2,8 +2,10 @@
 
 import os
 import time
+import json
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 import typer
 from rich.console import Console
 from rich.prompt import Confirm
@@ -17,6 +19,7 @@ from argo.core.logging_config import configure_logging, get_audit_logger, log_ap
 from argo.core.approval_policy import load_policy_from_env
 from argo.core.stix_export import export_orpheus_results_to_stix
 from argo.core.runbook_state import get_runbook_state_manager
+from argo.core.output_validator import get_output_validator
 
 app = typer.Typer(help="Argo CLI — The Argonauts SOC Platform")
 console = Console()
@@ -604,6 +607,133 @@ def replay_run(
         
     except Exception as e:
         console.print(f"[red]Error during replay:[/] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def validate_outputs(
+    report_path: Optional[str] = typer.Option(None, help="Path to markdown report"),
+    evidence_path: Optional[str] = typer.Option(None, help="Path to evidence pack"),
+    stix_path: Optional[str] = typer.Option(None, help="Path to STIX bundle")
+):
+    """Validate Orpheus outputs for quality and completeness."""
+    console.print("[bold]🔍 Validating Orpheus Outputs[/]")
+    
+    if not any([report_path, evidence_path, stix_path]):
+        console.print("[yellow]No paths specified. Validating all outputs in reports/ directory...[/]")
+        
+        reports_dir = Path("reports")
+        if not reports_dir.exists():
+            console.print("[red]Reports directory not found[/]")
+            raise typer.Exit(1)
+        
+        # Find all output files
+        report_files = list(reports_dir.glob("report_orpheus_*.md"))
+        evidence_files = list(reports_dir.glob("evidence_orpheus_*.jsonl"))
+        stix_files = list(reports_dir.glob("*.json"))  # STIX exports
+        
+        if not any([report_files, evidence_files, stix_files]):
+            console.print("[yellow]No Orpheus outputs found in reports/ directory[/]")
+            raise typer.Exit(1)
+        
+        # Validate found files
+        if report_files:
+            report_path = str(report_files[-1])  # Most recent
+        if evidence_files:
+            evidence_path = str(evidence_files[-1])  # Most recent
+        if stix_files:
+            stix_path = str(stix_files[-1])  # Most recent
+    
+    validator = get_output_validator()
+    validations = {}
+    
+    try:
+        # Validate markdown report
+        if report_path and Path(report_path).exists():
+            console.print(f"[blue]Validating report:[/] {report_path}")
+            
+            with open(report_path, 'r', encoding='utf-8') as f:
+                report_content = f.read()
+            
+            # Estimate evidence count from citations
+            import re
+            citations = re.findall(r'\[Evidence \d+\]', report_content)
+            evidence_count = len(set(citations))
+            
+            report_validation = validator.validate_markdown_report(report_content, evidence_count)
+            validations["markdown_report"] = report_validation
+            
+            status = "✅ VALID" if report_validation.get("valid", False) else "❌ INVALID"
+            score = report_validation.get("score", 0.0)
+            console.print(f"   Status: {status}")
+            console.print(f"   Score: {score:.2f}/1.00")
+        
+        # Validate evidence pack
+        if evidence_path and Path(evidence_path).exists():
+            console.print(f"[blue]Validating evidence pack:[/] {evidence_path}")
+            
+            evidence_pack = []
+            with open(evidence_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        evidence_pack.append(json.loads(line))
+            
+            evidence_validation = validator.validate_evidence_pack(evidence_pack)
+            validations["evidence_pack"] = evidence_validation
+            
+            status = "✅ VALID" if evidence_validation.get("valid", False) else "❌ INVALID"
+            score = evidence_validation.get("score", 0.0)
+            console.print(f"   Status: {status}")
+            console.print(f"   Score: {score:.2f}/1.00")
+        
+        # Validate STIX export
+        if stix_path and Path(stix_path).exists():
+            console.print(f"[blue]Validating STIX export:[/] {stix_path}")
+            
+            with open(stix_path, 'r', encoding='utf-8') as f:
+                stix_bundle = json.load(f)
+            
+            stix_validation = validator.validate_stix_export(stix_bundle)
+            validations["stix_export"] = stix_validation
+            
+            status = "✅ VALID" if stix_validation.get("valid", False) else "❌ INVALID"
+            score = stix_validation.get("score", 0.0)
+            console.print(f"   Status: {status}")
+            console.print(f"   Score: {score:.2f}/1.00")
+        
+        # Generate comprehensive validation report
+        if validations:
+            console.print(f"\n[bold]📋 Validation Summary[/]")
+            
+            overall_valid = all(v.get("valid", False) for v in validations.values())
+            overall_status = "✅ ALL VALID" if overall_valid else "❌ SOME INVALID"
+            console.print(f"Overall Status: {overall_status}")
+            
+            # Generate detailed validation report
+            validation_report = validator.generate_validation_report(validations)
+            
+            # Save validation report
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            validation_path = f"reports/validation_summary_{timestamp}.md"
+            
+            with open(validation_path, 'w', encoding='utf-8') as f:
+                f.write(validation_report)
+            
+            console.print(f"\n[green]Validation report saved to:[/] {validation_path}")
+            
+            # Show key recommendations
+            console.print(f"\n[bold]💡 Key Recommendations[/]")
+            for output_type, validation in validations.items():
+                if validation.get("recommendations"):
+                    console.print(f"\n[blue]{output_type.replace('_', ' ').title()}:[/]")
+                    for rec in validation["recommendations"][:2]:  # Show top 2
+                        console.print(f"  • {rec}")
+        
+        else:
+            console.print("[yellow]No valid outputs found to validate[/]")
+        
+    except Exception as e:
+        console.print(f"[red]Error during validation:[/] {e}")
         raise typer.Exit(1)
 
 
