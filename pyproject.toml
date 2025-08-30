@@ -20,6 +20,7 @@ dependencies = [
   "langchain-core>=0.2.39",   # lightweight core runtime LangGraph expects
   "structlog>=24.1.0",        # structured logging for audit trails
   "PyYAML>=6.0",              # YAML policy configuration
+  "watchdog>=3.0.0",          # File system monitoring for watch folder
 ]
 
 [project.optional-dependencies]

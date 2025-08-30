@@ -1,0 +1,12 @@
+{
+  "watchers": {
+    "test_watcher": {
+      "watch_dir": "samples",
+      "db_url": "postgresql://hunter:hunter@localhost:5433/hunter",
+      "object_store_dir": "object_store",
+      "debounce_time": 2.0
+    }
+  },
+  "timestamp": "2025-08-30T11:32:43.777074",
+  "running": true
+}

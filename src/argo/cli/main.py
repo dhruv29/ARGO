@@ -23,6 +23,7 @@ from argo.core.output_validator import get_output_validator
 from argo.cli.config_manager import get_config_manager
 from argo.cli.workflow_manager import get_workflow_manager
 from argo.cli.help_system import get_help_system
+from argo.core.watch_folder import get_watch_folder_manager
 
 app = typer.Typer(help="Argo CLI — The Argonauts SOC Platform")
 console = Console()
@@ -1365,6 +1366,142 @@ def _export_csv(output_path: str, filters: Optional[str]):
         
     except Exception as e:
         console.print(f"[red]Error during CSV export:[/] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def watch(
+    action: str = typer.Argument(..., help="Action: start, stop, status, add, remove"),
+    watch_dir: Optional[str] = typer.Argument(None, help="Directory to watch"),
+    name: Optional[str] = typer.Option(None, "--name", help="Watcher name"),
+    debounce: float = typer.Option(2.0, "--debounce", help="Debounce time in seconds")
+):
+    """Manage folder watchers for automatic PDF ingestion."""
+    console.print(f"[bold]👁️ Watch Folder Management[/]")
+    
+    watch_manager = get_watch_folder_manager()
+    
+    if action == "start":
+        _start_watchers(watch_manager)
+    elif action == "stop":
+        _stop_watchers(watch_manager)
+    elif action == "status":
+        _show_watcher_status(watch_manager)
+    elif action == "add":
+        if not watch_dir:
+            console.print("[red]Error:[/] Watch directory required for 'add' action")
+            raise typer.Exit(1)
+        if not name:
+            name = f"watcher_{Path(watch_dir).name}"
+        _add_watcher(watch_manager, name, watch_dir, debounce)
+    elif action == "remove":
+        if not name:
+            console.print("[red]Error:[/] Watcher name required for 'remove' action")
+            raise typer.Exit(1)
+        _remove_watcher(watch_manager, name)
+    else:
+        console.print(f"[red]Error:[/] Unknown action: {action}")
+        console.print("Available actions: start, stop, status, add, remove")
+        raise typer.Exit(1)
+
+
+def _start_watchers(watch_manager):
+    """Start all watchers and keep them running."""
+    try:
+        if not watch_manager.list_watchers():
+            console.print("[yellow]⚠️  No watchers configured[/]")
+            console.print("Use 'argo watch add <dir> --name <name>' to add a watcher first")
+            return
+        
+        console.print("[green]✅ Starting watch folder manager...[/]")
+        console.print("[yellow]Note:[/] This will run until you stop it with Ctrl+C")
+        console.print("Drop PDF files into watched directories to auto-ingest them")
+        
+        # Start the watchers
+        watch_manager.start()
+        
+        # Keep the process running
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]🛑 Stopping watch folder manager...[/]")
+            watch_manager.stop()
+            console.print("[green]✅ Watch folder manager stopped[/]")
+            
+    except Exception as e:
+        console.print(f"[red]Error starting watchers:[/] {e}")
+        raise typer.Exit(1)
+
+
+def _stop_watchers(watch_manager):
+    """Stop all watchers."""
+    try:
+        watch_manager.stop()
+        console.print("[green]✅ All watchers stopped[/]")
+    except Exception as e:
+        console.print(f"[red]Error stopping watchers:[/] {e}")
+        raise typer.Exit(1)
+
+
+def _show_watcher_status(watch_manager):
+    """Show status of all watchers."""
+    watchers = watch_manager.list_watchers()
+    
+    if not watchers:
+        console.print("[yellow]No watchers configured[/]")
+        return
+    
+    # Check if actually running
+    is_running = watch_manager.is_running()
+    
+    console.print(f"\n[bold]Active Watchers:[/] {len(watchers)}")
+    console.print(f"Status: {'🟢 Running' if is_running else '🔴 Stopped'}")
+    
+    for watcher_name in watchers:
+        watcher = watch_manager.get_watcher(watcher_name)
+        if watcher:
+            stats = watcher.get_stats()
+            console.print(f"\n[blue]Watcher:[/] {watcher_name}")
+            console.print(f"  Directory: {watcher.watch_dir}")
+            console.print(f"  Files Processed: {stats['files_processed']}")
+            console.print(f"  Files Skipped: {stats['files_skipped']}")
+            console.print(f"  Files Failed: {stats['files_failed']}")
+            console.print(f"  Total Bytes: {stats['total_bytes']:,}")
+            console.print(f"  Uptime: {stats['uptime_seconds']:.1f}s")
+
+
+def _add_watcher(watch_manager, name: str, watch_dir: str, debounce: float):
+    """Add a new watcher."""
+    try:
+        # Get configuration
+        db_url = os.getenv("DATABASE_URL", "postgresql://hunter:hunter@localhost:5433/hunter")
+        object_store_dir = "./object_store"
+        
+        # Add watcher
+        watch_manager.add_watcher(name, watch_dir, db_url, object_store_dir, debounce)
+        
+        console.print(f"[green]✅ Added watcher '{name}' for {watch_dir}[/]")
+        console.print(f"   [blue]Debounce:[/] {debounce}s")
+        console.print(f"   [blue]Database:[/] {db_url}")
+        console.print(f"   [blue]Object Store:[/] {object_store_dir}")
+        
+        # Start if not already running
+        if not watch_manager.running:
+            console.print("[yellow]Note:[/] Use 'argo watch start' to start watching")
+        
+    except Exception as e:
+        console.print(f"[red]Error adding watcher:[/] {e}")
+        raise typer.Exit(1)
+
+
+def _remove_watcher(watch_manager, name: str):
+    """Remove a watcher."""
+    try:
+        watch_manager.remove_watcher(name)
+        console.print(f"[green]✅ Removed watcher '{name}'[/]")
+    except Exception as e:
+        console.print(f"[red]Error removing watcher:[/] {e}")
         raise typer.Exit(1)
 
 
